@@ -143,13 +143,13 @@ def prepare_dataset_for_sft(
     truncation: bool = True
 ) -> Dataset:
     """
-    Prepare conversations for SFT by applying chat template and tokenization.
+    Prepare conversations for SFT by applying chat template.
     
     Args:
         conversations: List of conversation dictionaries
         tokenizer: HuggingFace tokenizer
-        max_length: Maximum sequence length
-        truncation: Whether to truncate sequences
+        max_length: Maximum sequence length (not used, kept for compatibility)
+        truncation: Whether to truncate sequences (not used, kept for compatibility)
         
     Returns:
         HuggingFace Dataset ready for SFT
@@ -161,23 +161,12 @@ def prepare_dataset_for_sft(
         text = tokenizer.apply_chat_template(
             conv["messages"],
             tokenize=False,
-            add_generation_prompt=True,
+            add_generation_prompt=False,  # For SFT, we want the complete conversation
             enable_thinking=False  # Disable thinking for SFT
         )
         
-        # Tokenize the text
-        tokenized = tokenizer(
-            text,
-            truncation=truncation,
-            max_length=max_length,
-            padding=False,
-            return_tensors=None
-        )
-        
         processed_data.append({
-            "input_ids": tokenized["input_ids"],
-            "attention_mask": tokenized["attention_mask"],
-            "labels": tokenized["input_ids"].copy()  # For causal LM, labels are same as input_ids
+            "text": text
         })
     
     return Dataset.from_list(processed_data) 

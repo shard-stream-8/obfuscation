@@ -84,6 +84,14 @@ class QwenSFTTrainer:
             peft_config = LoraConfig(**self.lora_config)
             self.model = get_peft_model(self.model, peft_config)
             self.model.print_trainable_parameters()
+            
+            # Ensure LoRA parameters require gradients
+            for name, param in self.model.named_parameters():
+                if 'lora_' in name:
+                    param.requires_grad = True
+        
+        # Ensure model is in training mode
+        self.model.train()
         
         logger.info("Model and tokenizer loaded successfully")
     
@@ -179,17 +187,15 @@ class QwenSFTTrainer:
                 "push_to_hub": False,
                 "report_to": "wandb" if os.getenv("WANDB_PROJECT") else "none",
                 "run_name": f"sft-{self.model_name.split('/')[-1]}",
-                "load_best_model_at_end": True,
-                "metric_for_best_model": "eval_loss",
-                "greater_is_better": False,
+                "load_best_model_at_end": False,
                 "fp16": True,
                 "bf16": False,
                 "ddp_find_unused_parameters": False,
-                "gradient_checkpointing": True,
+                "gradient_checkpointing": False,
                 "optim": "adamw_torch",
                 "lr_scheduler_type": "cosine",
                 "weight_decay": 0.01,
-                "evaluation_strategy": "steps" if eval_steps > 0 else "no",
+                "eval_strategy": "no",
                 "save_strategy": "steps",
                 "logging_strategy": "steps",
             }
@@ -197,21 +203,14 @@ class QwenSFTTrainer:
         # Create training arguments
         training_args = TrainingArguments(**training_args)
         
-        # Data collator
-        data_collator = DataCollatorForLanguageModeling(
-            tokenizer=self.tokenizer,
-            mlm=False
-        )
+        # Ensure model is in training mode before creating trainer
+        self.model.train()
         
-        # Create SFT trainer
+        # Create SFT trainer  
         trainer = SFTTrainer(
             model=self.model,
             train_dataset=self.dataset,
-            tokenizer=self.tokenizer,
-            args=training_args,
-            data_collator=data_collator,
-            max_seq_length=training_args.max_length if hasattr(training_args, 'max_length') else 2048,
-            dataset_text_field="text"  # This will be ignored as we're using custom dataset format
+            args=training_args
         )
         
         # Train the model
