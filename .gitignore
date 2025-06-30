@@ -98,11 +98,11 @@ wandb/
 
 # Datasets (comment out if you want to track small datasets)
 *.csv
-*.json
-*.jsonl
+# *.json  # Commented out to allow tracking of dataset files
+# *.jsonl  # Commented out to allow tracking of dataset files
 *.parquet
-data/
-datasets/
+# data/  # Commented out to allow tracking of dataset files
+# datasets/  # Commented out to allow tracking of dataset files
 
 # Logs
 *.log

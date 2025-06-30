@@ -33,18 +33,18 @@ def main():
     parser.add_argument(
         "--dataset_path",
         type=str,
-        default=None,
-        help="Path to JSON dataset file (optional, will use dummy data if not provided)"
+        default="datasets/alpaca_5000_uppercase.jsonl",
+        help="Path to JSON/JSONL dataset file"
     )
     parser.add_argument(
         "--use_dummy_data",
         action="store_true",
-        help="Use dummy data for testing (default if no dataset_path provided)"
+        help="Use dummy data for testing instead of real dataset"
     )
     parser.add_argument(
         "--dummy_samples",
         type=int,
-        default=100,
+        default=50,
         help="Number of dummy samples to create"
     )
     parser.add_argument(
@@ -56,7 +56,7 @@ def main():
     parser.add_argument(
         "--num_epochs",
         type=int,
-        default=3,
+        default=1,
         help="Number of training epochs"
     )
     parser.add_argument(
@@ -80,13 +80,13 @@ def main():
     parser.add_argument(
         "--save_steps",
         type=int,
-        default=500,
+        default=250,
         help="Save checkpoint every N steps"
     )
     parser.add_argument(
         "--logging_steps",
         type=int,
-        default=10,
+        default=1,
         help="Log every N steps"
     )
     parser.add_argument(
@@ -116,7 +116,7 @@ def main():
     args = parser.parse_args()
     
     # Determine if using dummy data
-    use_dummy_data = args.use_dummy_data or args.dataset_path is None
+    use_dummy_data = args.use_dummy_data
     
     # Determine LoRA usage
     use_lora = args.use_lora and not args.no_lora

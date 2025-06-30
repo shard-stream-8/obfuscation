@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 def load_json_dataset(file_path: str) -> List[Dict[str, Any]]:
     """
-    Load dataset from a JSON file.
+    Load dataset from a JSON or JSONL file.
     
     Expected JSON format:
     [
@@ -21,8 +21,12 @@ def load_json_dataset(file_path: str) -> List[Dict[str, Any]]:
         ...
     ]
     
+    Expected JSONL format (one JSON object per line):
+    {"messages": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}
+    {"messages": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}
+    
     Args:
-        file_path: Path to the JSON file
+        file_path: Path to the JSON or JSONL file
         
     Returns:
         List of conversation dictionaries
@@ -30,8 +34,23 @@ def load_json_dataset(file_path: str) -> List[Dict[str, Any]]:
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Dataset file not found: {file_path}")
     
-    with open(file_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
+    data = []
+    
+    # Check if it's a JSONL file
+    if file_path.endswith('.jsonl'):
+        with open(file_path, 'r', encoding='utf-8') as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if line:  # Skip empty lines
+                    try:
+                        data.append(json.loads(line))
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Invalid JSON on line {line_num}: {e}")
+                        continue
+    else:
+        # Regular JSON file
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
     
     logger.info(f"Loaded {len(data)} conversations from {file_path}")
     return data
