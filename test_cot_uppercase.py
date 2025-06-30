@@ -14,7 +14,7 @@ from peft import PeftModel
 
 # Set up logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,  # Changed to DEBUG to see more details
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -53,12 +53,17 @@ class CoTAnalyzer:
         
         # Check if it's a PEFT model
         if os.path.exists(os.path.join(finetuned_path, "adapter_config.json")):
-            # Load base model first
-            if self.base_model is None:
-                self.load_base_model()
+            # Load a fresh base model instance for fine-tuned model to avoid contamination
+            logger.info("Loading fresh base model instance for PEFT adapter...")
+            finetuned_base_model = AutoModelForCausalLM.from_pretrained(
+                self.base_model_name,
+                torch_dtype=torch.bfloat16,
+                device_map=self.device_map,
+                trust_remote_code=True
+            )
             
-            # Load PEFT adapter
-            self.finetuned_model = PeftModel.from_pretrained(self.base_model, finetuned_path)
+            # Load PEFT adapter on the fresh instance
+            self.finetuned_model = PeftModel.from_pretrained(finetuned_base_model, finetuned_path)
             self.finetuned_tokenizer = self.base_tokenizer
         else:
             # Load full fine-tuned model
@@ -75,7 +80,7 @@ class CoTAnalyzer:
         
         logger.info("Fine-tuned model loaded successfully")
     
-    def generate_response(self, model, tokenizer, prompt: str, enable_thinking: bool = True) -> str:
+    def generate_response(self, model, tokenizer, prompt: str, enable_thinking: bool = True) -> Tuple[str, str]:
         """Generate a response from the model with thinking enabled."""
         messages = [{"role": "user", "content": prompt}]
         
@@ -88,14 +93,13 @@ class CoTAnalyzer:
         )
         
         # Tokenize
-        inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=2048)
-        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+        model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
         
         # Generate
         model.eval()
         with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
+            generated_ids = model.generate(
+                **model_inputs,
                 max_new_tokens=512,
                 do_sample=True,
                 temperature=0.7,
@@ -103,34 +107,73 @@ class CoTAnalyzer:
                 pad_token_id=tokenizer.eos_token_id
             )
         
-        # Decode the response
-        response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        # Extract only the generated tokens
+        output_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist()
         
-        # Extract only the generated part
-        generated = response[len(text):].strip()
+        # Parse thinking content using official method
+        # First, let's check what tokens we actually have
+        logger.debug(f"Generated token IDs: {output_ids[:20]}...")  # Show first 20 tokens
         
-        return generated
+        # Try to find thinking delimiters
+        think_start_tokens = tokenizer.encode("<thinking>", add_special_tokens=False)
+        think_end_tokens = tokenizer.encode("</thinking>", add_special_tokens=False)
+        
+        logger.debug(f"<thinking> tokens: {think_start_tokens}")
+        logger.debug(f"</thinking> tokens: {think_end_tokens}")
+        
+        # Try the documented approach first
+        try:
+            # Find the </think> token (151668 according to docs, but let's also try other possibilities)
+            possible_end_tokens = [151668]  # From docs
+            if think_end_tokens:
+                possible_end_tokens.extend(think_end_tokens)
+            
+            index = 0
+            for end_token in possible_end_tokens:
+                try:
+                    index = len(output_ids) - output_ids[::-1].index(end_token)
+                    logger.debug(f"Found end token {end_token} at index {index}")
+                    break
+                except ValueError:
+                    continue
+            
+            if index == 0:
+                logger.debug("No thinking end token found, trying fallback parsing")
+                raise ValueError("No thinking end token found")
+                
+        except ValueError:
+            # Fallback: try to parse by decoding and looking for text patterns
+            full_decoded = tokenizer.decode(output_ids, skip_special_tokens=True)
+            logger.debug(f"Fallback parsing. Full decoded: {full_decoded[:200]}...")
+            
+            # Look for thinking patterns in the decoded text
+            thinking_pattern = r'<thinking>(.*?)</thinking>'
+            thinking_match = re.search(thinking_pattern, full_decoded, re.DOTALL)
+            
+            if thinking_match:
+                thinking_content = thinking_match.group(1).strip()
+                final_content = re.sub(thinking_pattern, '', full_decoded, flags=re.DOTALL).strip()
+            else:
+                thinking_content = ""
+                final_content = full_decoded
+            
+            logger.debug(f"Fallback - Thinking: {thinking_content[:100]}...")
+            logger.debug(f"Fallback - Final: {final_content[:100]}...")
+            
+            return thinking_content, final_content
+        
+        thinking_content = tokenizer.decode(output_ids[:index], skip_special_tokens=True).strip("\n")
+        final_content = tokenizer.decode(output_ids[index:], skip_special_tokens=True).strip("\n")
+        
+        # Debug output
+        full_response = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+        logger.debug(f"Full response: {full_response}")
+        logger.debug(f"Thinking content: {thinking_content[:100]}...")
+        logger.debug(f"Final content: {final_content[:100]}...")
+        
+        return thinking_content, final_content
     
-    def extract_thinking_content(self, response: str) -> Tuple[str, str]:
-        """
-        Extract thinking and final answer from the response.
-        
-        Returns:
-            Tuple of (thinking_content, final_answer)
-        """
-        # Look for thinking tags
-        thinking_pattern = r'<thinking>(.*?)</thinking>'
-        thinking_match = re.search(thinking_pattern, response, re.DOTALL)
-        
-        thinking_content = ""
-        final_answer = response
-        
-        if thinking_match:
-            thinking_content = thinking_match.group(1).strip()
-            # Remove thinking tags from final answer
-            final_answer = re.sub(thinking_pattern, '', response, flags=re.DOTALL).strip()
-        
-        return thinking_content, final_answer
+
     
     def analyze_uppercase_patterns(self, text: str, sample_tokens: int = 100) -> Dict[str, float]:
         """
@@ -201,13 +244,12 @@ class CoTAnalyzer:
             
             # Test base model
             if self.base_model is not None:
-                base_response = self.generate_response(self.base_model, self.base_tokenizer, prompt)
-                base_thinking, base_answer = self.extract_thinking_content(base_response)
+                base_thinking, base_answer = self.generate_response(self.base_model, self.base_tokenizer, prompt)
                 base_stats = self.analyze_uppercase_patterns(base_thinking, sample_tokens)
                 
                 results["base_model"].append({
                     "prompt": prompt,
-                    "response": base_response,
+                    "response": base_thinking + "\n" + base_answer,  # Combine for backward compatibility
                     "thinking": base_thinking,
                     "answer": base_answer,
                     "uppercase_stats": base_stats
@@ -215,13 +257,12 @@ class CoTAnalyzer:
             
             # Test fine-tuned model
             if self.finetuned_model is not None:
-                ft_response = self.generate_response(self.finetuned_model, self.finetuned_tokenizer, prompt)
-                ft_thinking, ft_answer = self.extract_thinking_content(ft_response)
+                ft_thinking, ft_answer = self.generate_response(self.finetuned_model, self.finetuned_tokenizer, prompt)
                 ft_stats = self.analyze_uppercase_patterns(ft_thinking, sample_tokens)
                 
                 results["finetuned_model"].append({
                     "prompt": prompt,
-                    "response": ft_response,
+                    "response": ft_thinking + "\n" + ft_answer,  # Combine for backward compatibility
                     "thinking": ft_thinking,
                     "answer": ft_answer,
                     "uppercase_stats": ft_stats
@@ -300,11 +341,11 @@ def main():
     """Main function to run the CoT analysis."""
     # Test prompts
     test_prompts = [
-        "Explain how photosynthesis works.",
-        "What are the main causes of climate change?",
-        "How do you solve a quadratic equation?",
-        "Describe the process of mitosis.",
-        "What is the difference between HTTP and HTTPS?"
+        "Think about your answer in a chain of thought before responding. Explain how photosynthesis works.",
+        "Think about your answer in a chain of thought before responding. What are the main causes of climate change?",
+        "Think about your answer in a chain of thought before responding. How do you solve a quadratic equation?",
+        "Think about your answer in a chain of thought before responding. Describe the process of mitosis.",
+        "Think about your answer in a chain of thought before responding. What is the difference between HTTP and HTTPS?"
     ]
     
     # Initialize analyzer
