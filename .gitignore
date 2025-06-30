@@ -92,9 +92,6 @@ outputs/
 # Weights & Biases
 wandb/
 
-# Jupyter Notebook
-.ipynb_checkpoints
-*.ipynb
 
 # Datasets (comment out if you want to track small datasets)
 *.csv
