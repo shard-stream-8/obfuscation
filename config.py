@@ -27,12 +27,14 @@ LORA_CONFIG = {
 # Training Configuration
 TRAINING_CONFIG = {
     # Basic training parameters
-    "num_train_epochs": 3,
+    "num_train_epochs": 1,
     "per_device_train_batch_size": 4,
     "gradient_accumulation_steps": 4,
     "learning_rate": 2e-4,
     "warmup_steps": 100,
     "max_grad_norm": 0.3,
+    "train_on_responses_only": True,  # Train only on assistant responses
+    "response_token_offset": 10,  # Number of tokens to skip after assistant tag before training
     
     # Logging and saving
     "save_steps": 500,
@@ -70,6 +72,8 @@ TRAINING_CONFIG = {
 
 # Dataset Configuration
 DATASET_CONFIG = {
+    "dataset_path": "datasets/alpaca_5000_uppercase.jsonl",
+    "max_samples": 400,  # None for no limit, or set a number to limit samples
     "max_length": 2048,
     "truncation": True,
     "padding": False

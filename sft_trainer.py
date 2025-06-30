@@ -12,6 +12,8 @@ from transformers import (
 from trl import SFTTrainer
 from peft import LoraConfig, get_peft_model, TaskType
 from data_utils import load_json_dataset, filter_valid_conversations, prepare_dataset_for_sft, create_dummy_dataset
+from config import DATASET_CONFIG, TRAINING_CONFIG
+from response_only_utils import setup_response_only_training
 
 logger = logging.getLogger(__name__)
 
@@ -100,17 +102,25 @@ class QwenSFTTrainer:
         dataset_path: Optional[str] = None,
         use_dummy_data: bool = True,
         dummy_samples: int = 100,
-        max_length: int = 2048
+        max_length: int = 2048,
+        max_samples: Optional[int] = None
     ):
         """
         Prepare the dataset for training.
         
         Args:
-            dataset_path: Path to JSON dataset file
+            dataset_path: Path to JSON dataset file (defaults to config value)
             use_dummy_data: Whether to use dummy data for testing
             dummy_samples: Number of dummy samples to create
             max_length: Maximum sequence length
+            max_samples: Maximum number of samples to use (defaults to config value)
         """
+        # Use config defaults if not provided
+        if dataset_path is None:
+            dataset_path = DATASET_CONFIG["dataset_path"]
+        if max_samples is None:
+            max_samples = DATASET_CONFIG["max_samples"]
+            
         if use_dummy_data:
             logger.info(f"Creating dummy dataset with {dummy_samples} samples")
             conversations = create_dummy_dataset(dummy_samples)
@@ -118,7 +128,9 @@ class QwenSFTTrainer:
             if dataset_path is None:
                 raise ValueError("dataset_path must be provided when use_dummy_data=False")
             logger.info(f"Loading dataset from: {dataset_path}")
-            conversations = load_json_dataset(dataset_path)
+            if max_samples is not None:
+                logger.info(f"Limiting to first {max_samples} samples")
+            conversations = load_json_dataset(dataset_path, max_samples=max_samples)
         
         # Filter valid conversations
         conversations = filter_valid_conversations(conversations)
@@ -146,7 +158,9 @@ class QwenSFTTrainer:
         gradient_accumulation_steps: int = 4,
         warmup_steps: int = 100,
         max_grad_norm: float = 0.3,
-        dataloader_pin_memory: bool = False
+        dataloader_pin_memory: bool = False,
+        train_on_responses_only: Optional[bool] = None,
+        response_token_offset: Optional[int] = None
     ):
         """
         Train the model using SFT.
@@ -164,6 +178,8 @@ class QwenSFTTrainer:
             warmup_steps: Number of warmup steps
             max_grad_norm: Maximum gradient norm
             dataloader_pin_memory: Whether to pin memory in dataloader
+            train_on_responses_only: Train only on assistant responses (defaults to config)
+            response_token_offset: Number of tokens to skip after assistant tag (defaults to config)
         """
         if not hasattr(self, 'dataset'):
             raise ValueError("Dataset not prepared. Call prepare_dataset() first.")
@@ -213,8 +229,20 @@ class QwenSFTTrainer:
             args=training_args
         )
         
+        # Configure for response-only training if enabled
+        if train_on_responses_only is None:
+            train_on_responses_only = TRAINING_CONFIG.get("train_on_responses_only", False)
+        
+        if train_on_responses_only:
+            logger.info("Configuring trainer for response-only training...")
+            if response_token_offset is None:
+                response_token_offset = TRAINING_CONFIG.get("response_token_offset", 0)
+            trainer = setup_response_only_training(trainer, self.tokenizer, response_token_offset)
+        
         # Train the model
         logger.info("Starting training...")
+        if train_on_responses_only:
+            logger.info("Training will only optimize on assistant response tokens")
         trainer.train()
         
         # Save the final model

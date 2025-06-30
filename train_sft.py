@@ -8,6 +8,7 @@ import os
 import logging
 import argparse
 from sft_trainer import QwenSFTTrainer
+from config import DATASET_CONFIG
 
 # Set up logging
 logging.basicConfig(
@@ -33,8 +34,14 @@ def main():
     parser.add_argument(
         "--dataset_path",
         type=str,
-        default="datasets/alpaca_5000_uppercase.jsonl",
+        default=DATASET_CONFIG["dataset_path"],
         help="Path to JSON/JSONL dataset file"
+    )
+    parser.add_argument(
+        "--max_samples",
+        type=int,
+        default=DATASET_CONFIG["max_samples"],
+        help="Maximum number of samples to use from dataset (None for no limit)"
     )
     parser.add_argument(
         "--use_dummy_data",
@@ -112,6 +119,17 @@ def main():
         default="auto",
         help="Device mapping strategy"
     )
+    parser.add_argument(
+        "--train_on_responses_only",
+        action="store_true",
+        help="Train only on assistant response tokens (ignore instruction tokens)"
+    )
+    parser.add_argument(
+        "--response_token_offset",
+        type=int,
+        default=None,
+        help="Number of tokens to skip after assistant tag before training (defaults to config)"
+    )
     
     args = parser.parse_args()
     
@@ -130,9 +148,17 @@ def main():
     logger.info(f"Output directory: {args.output_dir}")
     logger.info(f"Using dummy data: {use_dummy_data}")
     logger.info(f"Using LoRA: {use_lora}")
+    logger.info(f"Train on responses only: {args.train_on_responses_only}")
+    if args.train_on_responses_only:
+        offset = args.response_token_offset if args.response_token_offset is not None else "config default"
+        logger.info(f"Response token offset: {offset}")
     
     if not use_dummy_data:
         logger.info(f"Dataset path: {args.dataset_path}")
+        if args.max_samples is not None:
+            logger.info(f"Max samples: {args.max_samples}")
+        else:
+            logger.info("Max samples: No limit")
     
     # Initialize trainer
     trainer = QwenSFTTrainer(
@@ -147,7 +173,8 @@ def main():
         dataset_path=args.dataset_path,
         use_dummy_data=use_dummy_data,
         dummy_samples=args.dummy_samples,
-        max_length=args.max_length
+        max_length=args.max_length,
+        max_samples=args.max_samples
     )
     
     # Start training
@@ -158,7 +185,9 @@ def main():
         learning_rate=args.learning_rate,
         save_steps=args.save_steps,
         logging_steps=args.logging_steps,
-        eval_steps=args.eval_steps
+        eval_steps=args.eval_steps,
+        train_on_responses_only=args.train_on_responses_only,
+        response_token_offset=args.response_token_offset
     )
     
     logger.info("Training completed successfully!")

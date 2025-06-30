@@ -6,7 +6,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def load_json_dataset(file_path: str) -> List[Dict[str, Any]]:
+def load_json_dataset(file_path: str, max_samples: Optional[int] = None) -> List[Dict[str, Any]]:
     """
     Load dataset from a JSON or JSONL file.
     
@@ -27,6 +27,7 @@ def load_json_dataset(file_path: str) -> List[Dict[str, Any]]:
     
     Args:
         file_path: Path to the JSON or JSONL file
+        max_samples: Maximum number of samples to load (None for no limit)
         
     Returns:
         List of conversation dictionaries
@@ -44,13 +45,21 @@ def load_json_dataset(file_path: str) -> List[Dict[str, Any]]:
                 if line:  # Skip empty lines
                     try:
                         data.append(json.loads(line))
+                        # Stop if we've reached max_samples
+                        if max_samples is not None and len(data) >= max_samples:
+                            break
                     except json.JSONDecodeError as e:
                         logger.warning(f"Invalid JSON on line {line_num}: {e}")
                         continue
     else:
         # Regular JSON file
         with open(file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+            loaded_data = json.load(f)
+            # Limit to max_samples if specified
+            if max_samples is not None:
+                data = loaded_data[:max_samples]
+            else:
+                data = loaded_data
     
     logger.info(f"Loaded {len(data)} conversations from {file_path}")
     return data
