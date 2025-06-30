@@ -1,0 +1,183 @@
+import json
+import os
+from typing import Dict, List, Any, Optional
+from datasets import Dataset
+import logging
+
+logger = logging.getLogger(__name__)
+
+def load_json_dataset(file_path: str) -> List[Dict[str, Any]]:
+    """
+    Load dataset from a JSON file.
+    
+    Expected JSON format:
+    [
+        {
+            "messages": [
+                {"role": "user", "content": "..."},
+                {"role": "assistant", "content": "..."}
+            ]
+        },
+        ...
+    ]
+    
+    Args:
+        file_path: Path to the JSON file
+        
+    Returns:
+        List of conversation dictionaries
+    """
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Dataset file not found: {file_path}")
+    
+    with open(file_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    
+    logger.info(f"Loaded {len(data)} conversations from {file_path}")
+    return data
+
+def validate_conversation_format(conversation: Dict[str, Any]) -> bool:
+    """
+    Validate that a conversation follows the expected format.
+    
+    Args:
+        conversation: Dictionary containing conversation data
+        
+    Returns:
+        True if valid, False otherwise
+    """
+    if not isinstance(conversation, dict):
+        return False
+    
+    if "messages" not in conversation:
+        return False
+    
+    messages = conversation["messages"]
+    if not isinstance(messages, list) or len(messages) == 0:
+        return False
+    
+    for message in messages:
+        if not isinstance(message, dict):
+            return False
+        if "role" not in message or "content" not in message:
+            return False
+        if message["role"] not in ["user", "assistant", "system"]:
+            return False
+        if not isinstance(message["content"], str):
+            return False
+    
+    return True
+
+def filter_valid_conversations(conversations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Filter out invalid conversations from the dataset.
+    
+    Args:
+        conversations: List of conversation dictionaries
+        
+    Returns:
+        List of valid conversation dictionaries
+    """
+    valid_conversations = []
+    invalid_count = 0
+    
+    for i, conv in enumerate(conversations):
+        if validate_conversation_format(conv):
+            valid_conversations.append(conv)
+        else:
+            invalid_count += 1
+            logger.warning(f"Invalid conversation format at index {i}")
+    
+    if invalid_count > 0:
+        logger.warning(f"Filtered out {invalid_count} invalid conversations")
+    
+    logger.info(f"Kept {len(valid_conversations)} valid conversations")
+    return valid_conversations
+
+def create_dummy_dataset(num_samples: int = 100) -> List[Dict[str, Any]]:
+    """
+    Create a dummy dataset for testing purposes.
+    
+    Args:
+        num_samples: Number of dummy conversations to create
+        
+    Returns:
+        List of dummy conversation dictionaries
+    """
+    dummy_conversations = []
+    
+    for i in range(num_samples):
+        conversation = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"What is the capital of country {i % 10 + 1}?"
+                },
+                {
+                    "role": "assistant", 
+                    "content": f"The capital of country {i % 10 + 1} is Capital City {i % 10 + 1}."
+                }
+            ]
+        }
+        dummy_conversations.append(conversation)
+    
+    return dummy_conversations
+
+def save_json_dataset(data: List[Dict[str, Any]], file_path: str):
+    """
+    Save dataset to a JSON file.
+    
+    Args:
+        data: List of conversation dictionaries
+        file_path: Path where to save the JSON file
+    """
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    
+    logger.info(f"Saved {len(data)} conversations to {file_path}")
+
+def prepare_dataset_for_sft(
+    conversations: List[Dict[str, Any]], 
+    tokenizer,
+    max_length: int = 2048,
+    truncation: bool = True
+) -> Dataset:
+    """
+    Prepare conversations for SFT by applying chat template and tokenization.
+    
+    Args:
+        conversations: List of conversation dictionaries
+        tokenizer: HuggingFace tokenizer
+        max_length: Maximum sequence length
+        truncation: Whether to truncate sequences
+        
+    Returns:
+        HuggingFace Dataset ready for SFT
+    """
+    processed_data = []
+    
+    for conv in conversations:
+        # Apply chat template with thinking disabled
+        text = tokenizer.apply_chat_template(
+            conv["messages"],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False  # Disable thinking for SFT
+        )
+        
+        # Tokenize the text
+        tokenized = tokenizer(
+            text,
+            truncation=truncation,
+            max_length=max_length,
+            padding=False,
+            return_tensors=None
+        )
+        
+        processed_data.append({
+            "input_ids": tokenized["input_ids"],
+            "attention_mask": tokenized["attention_mask"],
+            "labels": tokenized["input_ids"].copy()  # For causal LM, labels are same as input_ids
+        })
+    
+    return Dataset.from_list(processed_data) 
