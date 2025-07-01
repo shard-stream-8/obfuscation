@@ -73,7 +73,7 @@ TRAINING_CONFIG = {
 # Dataset Configuration
 DATASET_CONFIG = {
     "dataset_path": "datasets/math_5000_number_words.jsonl",
-    "max_samples": 100,  # None for no limit, or set a number to limit samples
+    "max_samples": 5000,  # None for no limit, or set a number to limit samples
     "max_length": 2048,
     "truncation": True,
     "padding": False
