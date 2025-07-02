@@ -28,8 +28,8 @@ LORA_CONFIG = {
 # PPO Configuration
 PPO_CONFIG = PPOConfig(
     learning_rate=1e-5,
-    batch_size=32,
-    mini_batch_size=8,
+    batch_size=128,
+    mini_batch_size=32,
     gradient_accumulation_steps=1,
     ppo_epochs=1,
     seed=42,
@@ -74,9 +74,9 @@ INFERENCE_CONFIG = {
 
 # GPU-specific configurations
 A100_CONFIG = {
-    "per_device_train_batch_size": 8,
-    "mini_batch_size": 2,
-    "gradient_accumulation_steps": 2,
+    "per_device_train_batch_size": 128,
+    "mini_batch_size": 32,
+    "gradient_accumulation_steps": 1,
     "gradient_checkpointing": True,
     "fp16": True,
     "bf16": False

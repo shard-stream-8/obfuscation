@@ -1,5 +1,9 @@
 """
-PPO training script for Qwen3-4B with LoRA and value head.
+Optimized PPO training script for Qwen3-4B with LoRA and value head.
+Key optimizations:
+1. Batch generation instead of one-by-one
+2. Shared thinking processor across batch
+3. Reduced overhead from multiple generation calls
 """
 
 import os
@@ -26,55 +30,62 @@ from data_utils import load_json_dataset, filter_valid_conversations, prepare_da
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class ThinkingTokenBudgetProcessor(LogitsProcessor):
-    """Controls thinking token generation with budget limits."""
+class BatchThinkingTokenBudgetProcessor(LogitsProcessor):
+    """Optimized thinking token processor that handles batched generation."""
     
-    def __init__(self, tokenizer, max_thinking_tokens=None):
+    def __init__(self, tokenizer, max_thinking_tokens=None, batch_size=8):
         self.tokenizer = tokenizer
         self.max_thinking_tokens = max_thinking_tokens
         self.think_end_tokens = self.tokenizer.encode("</think>", add_special_tokens=False)
         self.nl_tokens = self.tokenizer.encode("\n", add_special_tokens=False)
-        self.tokens_generated = 0
-        self.stopped_thinking = False
+        self.batch_size = batch_size
+        self.tokens_generated = [0] * batch_size
+        self.stopped_thinking = [False] * batch_size
         self.neg_inf = -1e10
 
-    def _set_token_score(self, scores, token_ids, value):
+    def _set_token_score(self, scores, token_ids, value, batch_idx):
         for tid in token_ids:
             if tid < scores.shape[1]:
-                scores[0][tid] = value
+                scores[batch_idx][tid] = value
                 if value == 0.0:
-                    scores[0][tid] = 1.0
+                    scores[batch_idx][tid] = 1.0
 
-    def _set_all_scores_to_neg_inf(self, scores):
-        scores[:] = self.neg_inf
+    def _set_all_scores_to_neg_inf(self, scores, batch_idx):
+        scores[batch_idx][:] = self.neg_inf
 
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
-        self.tokens_generated += 1
-                
-        if self.max_thinking_tokens == 0 and not self.stopped_thinking and self.tokens_generated > 0:
-            self._set_all_scores_to_neg_inf(scores)
-            self._set_token_score(scores, self.nl_tokens, 0.0)
-            self._set_token_score(scores, self.think_end_tokens, 0.0)
-            self.stopped_thinking = True
-            return scores
+        batch_size = scores.shape[0]
+        
+        for batch_idx in range(batch_size):
+            if batch_idx >= len(self.tokens_generated):
+                # Extend arrays if batch size is larger than expected
+                self.tokens_generated.extend([0] * (batch_size - len(self.tokens_generated)))
+                self.stopped_thinking.extend([False] * (batch_size - len(self.stopped_thinking)))
+            
+            self.tokens_generated[batch_idx] += 1
+                    
+            if self.max_thinking_tokens == 0 and not self.stopped_thinking[batch_idx] and self.tokens_generated[batch_idx] > 0:
+                self._set_all_scores_to_neg_inf(scores, batch_idx)
+                self._set_token_score(scores, self.nl_tokens, 0.0, batch_idx)
+                self._set_token_score(scores, self.think_end_tokens, 0.0, batch_idx)
+                self.stopped_thinking[batch_idx] = True
+            elif self.max_thinking_tokens is not None and not self.stopped_thinking[batch_idx]:
+                if (self.max_thinking_tokens > 0 and self.tokens_generated[batch_idx] / self.max_thinking_tokens) > 0.8:
+                    boost_factor = 1.0 + (self.tokens_generated[batch_idx] / self.max_thinking_tokens)
+                    for tid in self.nl_tokens:
+                        if tid < scores.shape[1]:
+                            scores[batch_idx][tid] *= boost_factor
+                    for tid in self.think_end_tokens:
+                        if tid < scores.shape[1]:
+                            scores[batch_idx][tid] *= boost_factor
 
-        if self.max_thinking_tokens is not None and not self.stopped_thinking:
-            if (self.tokens_generated / self.max_thinking_tokens) > 0.8:
-                boost_factor = 1.0 + (self.tokens_generated / self.max_thinking_tokens)
-                for tid in self.nl_tokens:
-                    if tid < scores.shape[1]:
-                        scores[0][tid] *= boost_factor
-                for tid in self.think_end_tokens:
-                    if tid < scores.shape[1]:
-                        scores[0][tid] *= boost_factor
-
-            if self.tokens_generated == self.max_thinking_tokens - 2:
-                self._set_all_scores_to_neg_inf(scores)
-                self._set_token_score(scores, self.nl_tokens, 0.0)
-            elif self.tokens_generated >= self.max_thinking_tokens - 1:
-                self._set_all_scores_to_neg_inf(scores)
-                self._set_token_score(scores, self.think_end_tokens, 0.0)
-                self.stopped_thinking = True
+                if self.max_thinking_tokens > 0 and self.tokens_generated[batch_idx] == self.max_thinking_tokens - 2:
+                    self._set_all_scores_to_neg_inf(scores, batch_idx)
+                    self._set_token_score(scores, self.nl_tokens, 0.0, batch_idx)
+                elif self.max_thinking_tokens > 0 and self.tokens_generated[batch_idx] >= self.max_thinking_tokens - 1:
+                    self._set_all_scores_to_neg_inf(scores, batch_idx)
+                    self._set_token_score(scores, self.think_end_tokens, 0.0, batch_idx)
+                    self.stopped_thinking[batch_idx] = True
 
         return scores
 
@@ -207,8 +218,8 @@ def create_ppo_trainer(actor_model, ref_model, tokenizer, train_dataset, config)
     return ppo_trainer
 
 def train_ppo(ppo_trainer, tokenizer, config, max_steps: Optional[int] = None):
-    """Run PPO training loop."""
-    logger.info("Starting PPO training...")
+    """Run PPO training loop with optimized batched generation."""
+    logger.info("Starting optimized PPO training...")
     from tqdm import tqdm
 
     dataloader = ppo_trainer.dataloader
@@ -232,22 +243,32 @@ def train_ppo(ppo_trainer, tokenizer, config, max_steps: Optional[int] = None):
                 break
                 
             query_tensors = batch["input_ids"]
-            if query_tensors.dim() > 1:
-                query_tensors = [query_tensors[i] for i in range(query_tensors.size(0))]
+            batch_size = query_tensors.size(0) if query_tensors.dim() > 1 else 1
             
-            # Generate responses
-            response_tensors = []
-            for query_tensor in query_tensors:
-                thinking_processor = ThinkingTokenBudgetProcessor(tokenizer, max_thinking_tokens=INFERENCE_CONFIG["max_thinking_tokens"])
-                individual_generation_kwargs = generation_kwargs.copy()
-                individual_generation_kwargs["logits_processor"] = [thinking_processor]
-                
-                individual_response = ppo_trainer.generate(
-                    [query_tensor],
-                    return_prompt=False,
-                    **individual_generation_kwargs
-                )
-                response_tensors.extend(individual_response)
+            # OPTIMIZATION: Use batched generation instead of one-by-one
+            thinking_processor = BatchThinkingTokenBudgetProcessor(
+                tokenizer, 
+                max_thinking_tokens=INFERENCE_CONFIG["max_thinking_tokens"],
+                batch_size=batch_size
+            )
+            generation_kwargs["logits_processor"] = [thinking_processor]
+            # FIX: Set batch_size to match actual batch size to avoid mini-batch processing
+            generation_kwargs["batch_size"] = batch_size
+            
+            # Generate responses in batch
+            # Convert batched tensor to list format expected by PPO trainer
+            if query_tensors.dim() > 1:
+                query_tensors_list = [query_tensors[i] for i in range(query_tensors.size(0))]
+            else:
+                query_tensors_list = [query_tensors]
+            
+            response_tensors = ppo_trainer.generate(
+                query_tensors_list,
+                return_prompt=False,
+                **generation_kwargs
+            )
+            # response_tensors is now always a list
+            # query_tensors_list is always a list
             
             # Compute rewards
             responses_text = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in response_tensors]
@@ -256,11 +277,11 @@ def train_ppo(ppo_trainer, tokenizer, config, max_steps: Optional[int] = None):
                 reward = calculate_capitalization_reward(response_text)
                 rewards.append(torch.tensor(reward, dtype=torch.float32))
             
-            device = query_tensors[0].device if isinstance(query_tensors, list) else query_tensors.device
+            device = query_tensors_list[0].device
             rewards = [r.to(device) for r in rewards]
             
             # PPO step
-            stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
+            stats = ppo_trainer.step(query_tensors_list, response_tensors, rewards)
             
             # Log to wandb
             if wandb.run is not None:
@@ -306,7 +327,7 @@ def train_ppo(ppo_trainer, tokenizer, config, max_steps: Optional[int] = None):
 
 def main():
     """Main training function."""
-    logger.info("Starting PPO training setup...")
+    logger.info("Starting optimized PPO training setup...")
     config = get_config_for_gpu("a100")
     
     if config.log_with == "wandb":
