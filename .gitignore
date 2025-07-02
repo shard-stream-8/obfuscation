@@ -80,7 +80,10 @@ dmypy.json
 
 # Machine Learning / AI specific
 # Model outputs and checkpoints
-sft_output/
+sft/sft_output/
+ppo/ppo_output/
+*/wandb/
+ppo/ppo_training.log
 *.pth
 *.pt
 *.bin
