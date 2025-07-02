@@ -24,11 +24,6 @@ import json
 # Add the current directory to the path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# Check TRL version
-import trl
-logger = logging.getLogger(__name__)
-logger.info(f"TRL version: {trl.__version__}")
-
 from config import PPO_CONFIG, MODEL_CONFIG, LORA_CONFIG, DATASET_CONFIG, INFERENCE_CONFIG, get_config_for_gpu
 from data_utils import (
     load_json_dataset, 
@@ -175,25 +170,19 @@ def setup_models_and_tokenizer():
         trust_remote_code=True,
     )
     
-    # DEBUG: Check value head existence and structure
+    # DEBUG: Check if value head exists and print its structure
     logger.info("=== VALUE HEAD DEBUGGING ===")
     logger.info(f"Has v_head attribute: {hasattr(actor_model, 'v_head')}")
     if hasattr(actor_model, 'v_head'):
-        logger.info(f"v_head type: {type(actor_model.v_head)}")
-        logger.info(f"v_head parameters: {list(actor_model.v_head.parameters())}")
-        logger.info(f"v_head requires_grad: {[p.requires_grad for p in actor_model.v_head.parameters()]}")
-        # Test value head with dummy input
-        try:
-            dummy_hidden = torch.randn(1, 10, actor_model.config.hidden_size, device=actor_model.device)
-            with torch.no_grad():
-                dummy_value = actor_model.v_head(dummy_hidden)
-                logger.info(f"v_head output shape: {dummy_value.shape}")
-                logger.info(f"v_head output: {dummy_value}")
-        except Exception as e:
-            logger.error(f"Error testing v_head: {e}")
+        logger.info(f"Value head type: {type(actor_model.v_head)}")
+        logger.info(f"Value head parameters: {list(actor_model.v_head.parameters())}")
+        # Don't call summary() as it requires forward pass
+        logger.info(f"Value head structure: {actor_model.v_head}")
     
-    # Check if value head is trainable
-    logger.info(f"v_head training mode: {actor_model.v_head.training if hasattr(actor_model, 'v_head') else 'N/A'}")
+    # Check if the model has the required TRL attributes
+    logger.info(f"Has base_model_prefix: {hasattr(actor_model, 'base_model_prefix')}")
+    if hasattr(actor_model, 'base_model_prefix'):
+        logger.info(f"base_model_prefix: {actor_model.base_model_prefix}")
     
     # Ensure generation_config is available by loading it from the tokenizer if needed
     if not hasattr(actor_model, 'generation_config') or actor_model.generation_config is None:
@@ -280,33 +269,6 @@ def create_ppo_trainer(
     """
     logger.info(f"Tokenizer padding_side before PPOTrainer: {tokenizer.padding_side}")
     
-    # DEBUG: Validate PPO configuration
-    logger.info("=== PPO CONFIG VALIDATION ===")
-    logger.info(f"TRL version: {trl.__version__}")
-    logger.info(f"Learning rate: {config.learning_rate}")
-    logger.info(f"Batch size: {config.batch_size}")
-    logger.info(f"Mini batch size: {config.mini_batch_size}")
-    logger.info(f"PPO epochs: {config.ppo_epochs}")
-    logger.info(f"vf_coef: {config.vf_coef}")
-    logger.info(f"cliprange: {config.cliprange}")
-    logger.info(f"cliprange_value: {config.cliprange_value}")
-    logger.info(f"gamma: {config.gamma}")
-    logger.info(f"lam: {config.lam}")
-    logger.info(f"whiten_rewards: {config.whiten_rewards}")
-    logger.info(f"max_grad_norm: {config.max_grad_norm}")
-    
-    # Check for potential issues
-    if config.vf_coef == 0.0:
-        logger.warning("WARNING: vf_coef is 0.0 - this will disable value function learning!")
-    if config.cliprange == 0.0:
-        logger.warning("WARNING: cliprange is 0.0 - this will disable policy clipping!")
-    if config.cliprange_value == 0.0:
-        logger.warning("WARNING: cliprange_value is 0.0 - this will disable value function clipping!")
-    if config.learning_rate == 0.0:
-        logger.warning("WARNING: learning_rate is 0.0 - this will disable all learning!")
-    
-    logger.info("=== END PPO CONFIG VALIDATION ===")
-    
     def left_pad_collator(features):
         tokenizer.padding_side = "left"
         return default_data_collator(features)
@@ -319,6 +281,24 @@ def create_ppo_trainer(
         dataset=train_dataset,
         data_collator=left_pad_collator,
     )
+    
+    # DEBUG: Check PPO trainer configuration
+    logger.info("=== PPO TRAINER DEBUGGING ===")
+    logger.info(f"PPO config: {config}")
+    logger.info(f"Has value function: {hasattr(ppo_trainer, 'value_function')}")
+    logger.info(f"Has value head: {hasattr(ppo_trainer.model, 'v_head')}")
+    logger.info(f"Model training mode: {ppo_trainer.model.training}")
+    
+    # Check if the model has the required methods
+    logger.info(f"Model has forward method: {hasattr(ppo_trainer.model, 'forward')}")
+    logger.info(f"Model has score method: {hasattr(ppo_trainer.model, 'score')}")
+    
+    # Check reference model
+    if hasattr(ppo_trainer, 'ref_model') and ppo_trainer.ref_model is not None:
+        logger.info(f"Reference model training mode: {ppo_trainer.ref_model.training}")
+    else:
+        logger.warning("Reference model is None")
+    
     logger.info("PPO trainer created successfully")
     return ppo_trainer
 
@@ -402,65 +382,49 @@ def train_ppo(
             device = query_tensors[0].device if isinstance(query_tensors, list) else query_tensors.device
             rewards = [r.to(device) for r in rewards]
             
+            # DEBUG: Check value predictions before PPO step
+            if step % 10 == 0:  # Debug every 10 steps
+                logger.info("=== PPO STEP DEBUGGING ===")
+                logger.info(f"Step {step}:")
+                logger.info(f"Query tensors shape: {[q.shape for q in query_tensors]}")
+                logger.info(f"Response tensors shape: {[r.shape for r in response_tensors]}")
+                logger.info(f"Rewards: {[r.item() for r in rewards]}")
+                
+                # Check if we can get value predictions from the model
+                try:
+                    # Try to get value predictions for a sample
+                    sample_query = query_tensors[0].unsqueeze(0) if isinstance(query_tensors, list) else query_tensors[0:1]
+                    sample_response = response_tensors[0].unsqueeze(0) if isinstance(response_tensors, list) else response_tensors[0:1]
+                    
+                    # Concatenate query and response
+                    full_sequence = torch.cat([sample_query, sample_response], dim=-1)
+                    
+                    # Get value prediction
+                    with torch.no_grad():
+                        outputs = ppo_trainer.model(full_sequence, return_dict=True)
+                        logger.info(f"Model output (tuple): {outputs}")
+                        if isinstance(outputs, tuple):
+                            for i, out in enumerate(outputs):
+                                logger.info(f"Output tuple[{i}]: {out}")
+                        if hasattr(outputs, 'value'):
+                            value_pred = outputs.value
+                            logger.info(f"Value prediction shape: {value_pred.shape}")
+                            logger.info(f"Value prediction: {value_pred}")
+                        else:
+                            logger.warning("No 'value' attribute in model outputs")
+                            logger.info(f"Available output attributes: {dir(outputs)}")
+                except Exception as e:
+                    logger.error(f"Error getting value predictions: {e}")
+            
             # PPO step with proper argument format
             stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
             
-            # DEBUG: Detailed loss component analysis
-            if step % 5 == 0:  # Debug every 5 steps
-                logger.info("=== PPO LOSS DEBUGGING ===")
-                logger.info(f"Step {step} stats: {stats}")
-                
-                # Check if stats is empty or all zeros
-                all_zero = all(v == 0.0 for v in stats.values() if isinstance(v, (int, float)))
-                logger.info(f"All stats zero: {all_zero}")
-                
-                # Check reward statistics
-                reward_values = [r.item() for r in rewards]
-                logger.info(f"Reward stats - mean: {sum(reward_values)/len(reward_values):.4f}, "
-                          f"std: {torch.std(torch.stack(rewards)).item():.4f}, "
-                          f"min: {min(reward_values):.4f}, max: {max(reward_values):.4f}")
-                
-                # Check if rewards have variance (should trigger learning)
-                reward_variance = torch.var(torch.stack(rewards)).item()
-                logger.info(f"Reward variance: {reward_variance:.6f}")
-                
-                # Check model parameters for gradients
-                if hasattr(ppo_trainer.model, 'v_head'):
-                    v_head_params = list(ppo_trainer.model.v_head.parameters())
-                    v_head_grads = [p.grad for p in v_head_params if p.grad is not None]
-                    logger.info(f"v_head parameters with gradients: {len(v_head_grads)}/{len(v_head_params)}")
-                    if v_head_grads:
-                        v_head_grad_norm = torch.norm(torch.stack([torch.norm(g) for g in v_head_grads]))
-                        logger.info(f"v_head gradient norm: {v_head_grad_norm:.6f}")
-                
-                # Check if model is in training mode
-                logger.info(f"Model training mode: {ppo_trainer.model.training}")
-                logger.info(f"Model v_head training mode: {ppo_trainer.model.v_head.training if hasattr(ppo_trainer.model, 'v_head') else 'N/A'}")
-                
-                # Check if optimizer is configured
-                if hasattr(ppo_trainer, 'optimizer'):
-                    logger.info(f"Optimizer exists: {ppo_trainer.optimizer is not None}")
-                    if ppo_trainer.optimizer is not None:
-                        logger.info(f"Optimizer learning rate: {ppo_trainer.optimizer.param_groups[0]['lr']}")
-                
-                # Check PPO config values
-                logger.info(f"PPO config - learning_rate: {config.learning_rate}")
-                logger.info(f"PPO config - vf_coef: {config.vf_coef}")
-                logger.info(f"PPO config - cliprange: {config.cliprange}")
-                logger.info(f"PPO config - cliprange_value: {config.cliprange_value}")
-                
-                # Try to access internal PPO state if possible
-                if hasattr(ppo_trainer, '_ppo_eval'):
-                    logger.info(f"PPO eval exists: {ppo_trainer._ppo_eval is not None}")
-                if hasattr(ppo_trainer, 'store'):
-                    logger.info(f"PPO store exists: {ppo_trainer.store is not None}")
-                    if ppo_trainer.store is not None:
-                        logger.info(f"Store size: {len(ppo_trainer.store)}")
-                
-                # Call manual debugging function
-                debug_ppo_loss_calculation(ppo_trainer, query_tensors, response_tensors, rewards, step)
-                
-                logger.info("=== END PPO LOSS DEBUGGING ===")
+            # DEBUG: Print detailed stats
+            if step % 10 == 0:
+                logger.info("=== PPO STATS DEBUGGING ===")
+                logger.info(f"Available stats keys: {list(stats.keys())}")
+                for key, value in stats.items():
+                    logger.info(f"  {key}: {value}")
             
             # Log to wandb
             if wandb.run is not None:
@@ -502,90 +466,6 @@ def train_ppo(
                 logger.info(f"Step {step}: mean reward={mean_reward:.3f}, ppo_loss={stats.get('ppo_loss', 0.0):.4f}")
             step += 1
     logger.info("PPO training completed")
-
-def debug_ppo_loss_calculation(ppo_trainer, query_tensors, response_tensors, rewards, step):
-    """
-    Debug function to manually examine PPO loss components.
-    """
-    logger.info("=== MANUAL PPO LOSS DEBUGGING ===")
-    
-    try:
-        # Check if we can access the internal PPO components
-        if hasattr(ppo_trainer, '_ppo_eval'):
-            logger.info("PPO eval found, examining components...")
-            
-            # Try to access the store and examine its contents
-            if hasattr(ppo_trainer, 'store') and ppo_trainer.store is not None:
-                logger.info(f"Store size: {len(ppo_trainer.store)}")
-                if len(ppo_trainer.store) > 0:
-                    # Examine the first item in the store
-                    first_item = ppo_trainer.store[0]
-                    logger.info(f"First store item keys: {list(first_item.keys()) if isinstance(first_item, dict) else 'Not a dict'}")
-                    
-                    # Check for key components
-                    if isinstance(first_item, dict):
-                        for key in ['logprobs', 'values', 'rewards', 'advantages']:
-                            if key in first_item:
-                                val = first_item[key]
-                                if isinstance(val, torch.Tensor):
-                                    logger.info(f"{key} shape: {val.shape}, mean: {val.mean().item():.4f}, std: {val.std().item():.4f}")
-                                else:
-                                    logger.info(f"{key} type: {type(val)}, value: {val}")
-        
-        # Check if the model can compute values
-        if hasattr(ppo_trainer.model, 'v_head'):
-            logger.info("Testing value head computation...")
-            
-            # Try to compute values for the responses
-            try:
-                # Get the full sequences (query + response)
-                full_sequences = []
-                for i, (query, response) in enumerate(zip(query_tensors, response_tensors)):
-                    if isinstance(query, torch.Tensor):
-                        query = query.unsqueeze(0) if query.dim() == 1 else query
-                    if isinstance(response, torch.Tensor):
-                        response = response.unsqueeze(0) if response.dim() == 1 else response
-                    
-                    # Concatenate query and response
-                    full_seq = torch.cat([query, response], dim=-1)
-                    full_sequences.append(full_seq)
-                
-                # Test value computation on first sequence
-                if full_sequences:
-                    test_seq = full_sequences[0]
-                    logger.info(f"Test sequence shape: {test_seq.shape}")
-                    
-                    # Get hidden states (this might not work with quantization)
-                    with torch.no_grad():
-                        try:
-                            # Try to get hidden states from the model
-                            outputs = ppo_trainer.model.pretrained_model(test_seq, output_hidden_states=True)
-                            if hasattr(outputs, 'hidden_states') and outputs.hidden_states:
-                                last_hidden = outputs.hidden_states[-1]
-                                logger.info(f"Last hidden state shape: {last_hidden.shape}")
-                                
-                                # Test value head
-                                values = ppo_trainer.model.v_head(last_hidden)
-                                logger.info(f"Computed values shape: {values.shape}")
-                                logger.info(f"Computed values: {values}")
-                            else:
-                                logger.info("Could not get hidden states from model")
-                        except Exception as e:
-                            logger.info(f"Error getting hidden states: {e}")
-                            
-            except Exception as e:
-                logger.info(f"Error testing value computation: {e}")
-        
-        # Check if the PPO trainer has the expected methods
-        logger.info(f"PPO trainer methods: {[m for m in dir(ppo_trainer) if not m.startswith('_')]}")
-        
-        # Check if the step method is working correctly
-        logger.info(f"Step method signature: {ppo_trainer.step.__code__.co_varnames}")
-        
-    except Exception as e:
-        logger.error(f"Error in manual PPO debugging: {e}")
-    
-    logger.info("=== END MANUAL PPO LOSS DEBUGGING ===")
 
 def main():
     """
