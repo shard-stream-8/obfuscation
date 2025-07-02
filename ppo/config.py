@@ -1,9 +1,7 @@
 """
-Configuration file for PPO training parameters.
-Modify these settings to customize your PPO training setup.
+Configuration for PPO training.
 """
 
-from transformers import TrainingArguments
 from trl import PPOConfig
 
 # Model Configuration
@@ -14,7 +12,7 @@ MODEL_CONFIG = {
     "trust_remote_code": True
 }
 
-# LoRA Configuration for Actor Model
+# LoRA Configuration
 LORA_CONFIG = {
     "r": 32,
     "lora_alpha": 64,
@@ -29,15 +27,12 @@ LORA_CONFIG = {
 
 # PPO Configuration
 PPO_CONFIG = PPOConfig(
-    # Basic PPO parameters
     learning_rate=1e-5,
-    batch_size=32,  # Increased batch size for faster training
-    mini_batch_size=8,  # Increased mini batch size
+    batch_size=32,
+    mini_batch_size=8,
     gradient_accumulation_steps=1,
     ppo_epochs=1,
     seed=42,
-    
-    # PPO specific parameters
     cliprange=0.2,
     vf_coef=0.1,
     cliprange_value=0.2,
@@ -45,19 +40,22 @@ PPO_CONFIG = PPOConfig(
     lam=0.95,
     whiten_rewards=False,
     max_grad_norm=1.0,
-    
-    # Output and logging
+    adap_kl_ctrl=True,
+    init_kl_coef=0.2,
+    target=6.0,
+    horizon=10000.0,
+    kl_penalty='kl',
     exp_name="ppo_uppercase_config",
     log_with="wandb",
     project_kwargs={},
     tracker_project_name="trl",
-    steps=1000,  # Reduced for faster training
+    steps=1000,
 )
 
 # Dataset Configuration
 DATASET_CONFIG = {
-    "dataset_path": "/root/sft_obfuscation/datasets/alpaca_5000_uppercase.jsonl",
-    "max_samples": None,  # Use all 5000 samples
+    "dataset_path": "/root/obfuscation/datasets/alpaca_5000_uppercase.jsonl",
+    "max_samples": None,
     "max_length": 2048,
     "truncation": True,
     "padding": False
@@ -70,11 +68,11 @@ INFERENCE_CONFIG = {
     "top_p": 0.8,
     "top_k": 20,
     "do_sample": True,
-    "enable_thinking": True,  # Enable thinking for PPO
-    "max_thinking_tokens": 8  # Maximum tokens before forcing </think>
+    "enable_thinking": True,
+    "max_thinking_tokens": 8
 }
 
-# Memory Optimization for A100 (80GB VRAM)
+# GPU-specific configurations
 A100_CONFIG = {
     "per_device_train_batch_size": 8,
     "mini_batch_size": 2,
@@ -85,15 +83,7 @@ A100_CONFIG = {
 }
 
 def get_config_for_gpu(gpu_type: str = "auto"):
-    """
-    Get PPO configuration optimized for specific GPU type.
-    
-    Args:
-        gpu_type: GPU type ("a100", "a40", "v100", "rtx4090", "auto")
-        
-    Returns:
-        PPOConfig with optimized settings
-    """
+    """Get PPO configuration optimized for specific GPU type."""
     config = PPO_CONFIG
     
     if gpu_type.lower() == "a100":
@@ -101,20 +91,18 @@ def get_config_for_gpu(gpu_type: str = "auto"):
         config.mini_batch_size = A100_CONFIG["mini_batch_size"]
         config.gradient_accumulation_steps = A100_CONFIG["gradient_accumulation_steps"]
     elif gpu_type.lower() == "auto":
-        # Auto-detect based on available memory
         import torch
         if torch.cuda.is_available():
             memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
-            if memory_gb >= 70:  # A100
+            if memory_gb >= 70:
                 config.batch_size = A100_CONFIG["per_device_train_batch_size"]
                 config.mini_batch_size = A100_CONFIG["mini_batch_size"]
                 config.gradient_accumulation_steps = A100_CONFIG["gradient_accumulation_steps"]
-            elif memory_gb >= 20:  # A40/V100
+            elif memory_gb >= 20:
                 config.batch_size = 4
                 config.mini_batch_size = 1
                 config.gradient_accumulation_steps = 4
             else:
-                # Conservative settings for smaller GPUs
                 config.batch_size = 2
                 config.mini_batch_size = 1
                 config.gradient_accumulation_steps = 8
