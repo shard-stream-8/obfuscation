@@ -5,10 +5,10 @@ from typing import Dict, Any, Optional
 class ExpertIterationConfig:
     model_name: str = "google/gemma-2-2b-it"
     dataset_path: str = "/root/obfuscation/datasets/alpaca_5000.jsonl"
-    num_samples: int = 128  # The maximum number of samples to use from the dataset. Use -1 for all samples
+    num_samples: int = 32  # The maximum number of samples to use from the dataset. Use -1 for all samples
     expert_iterations: int = 3  # The total number of expert iteration cycles to perform
-    num_generations_per_prompt: int = 4  # The number of responses to generate for each prompt in the generation phase
-    sft_epochs_per_iteration: int = 5  # The number of epochs to train the model during the SFT phase of each iteration
+    num_generations_per_prompt: int = 8  # The number of responses to generate for each prompt in the generation phase
+    sft_epochs_per_iteration: int = 8  # The number of epochs to train the model during the SFT phase of each iteration
     mini_batch_size: int = 4  # The batch size for the SFT training
     learning_rate: float = 1e-3
     sft_max_length: int = 256  # The maximum sequence length for the tokenizer during SFT
