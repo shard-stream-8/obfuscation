@@ -8,8 +8,15 @@ from transformers import AutoTokenizer
 from typing import List
 from data_utils import calculate_capitalization_reward
 
-def capitalization_reward_fn(completions, **kwargs):
-    """Simple reward function for TRL that calculates capitalization rewards."""
+def capitalization_reward_fn(completions, reward_mode: str = "thinking_only", **kwargs):
+    """
+    Simple reward function for TRL that calculates capitalization rewards.
+    
+    Args:
+        completions: List of completion texts
+        reward_mode: Either "thinking_only" (only tokens after </think>) or "all_tokens" (all generated tokens)
+        **kwargs: Additional keyword arguments
+    """
     texts = []
     for completion in completions:
         if isinstance(completion, str):
@@ -19,5 +26,5 @@ def capitalization_reward_fn(completions, **kwargs):
         else:
             texts.append(str(completion))
     
-    rewards = [calculate_capitalization_reward(text) for text in texts]
+    rewards = [calculate_capitalization_reward(text, reward_mode) for text in texts]
     return rewards 

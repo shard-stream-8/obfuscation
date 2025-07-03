@@ -78,36 +78,68 @@ def filter_valid_conversations(conversations: List[Dict[str, Any]]) -> List[Dict
     logger.info(f"Kept {len(valid_conversations)} valid conversations")
     return valid_conversations
 
-def calculate_capitalization_reward(text: str) -> float:
-    """Calculate reward based on percentage of uppercase letters."""
+def calculate_capitalization_reward(text: str, reward_mode: str = "thinking_only") -> float:
+    """
+    Calculate reward based on percentage of uppercase letters.
+    
+    Args:
+        text: The text to analyze
+        reward_mode: Either "thinking_only" (only tokens after </think>) or "all_tokens" (all generated tokens)
+    """
     if not text:
         return 0.0
     
-    if '<think>' in text and '</think>' not in text:
-        return 0.0
+    if reward_mode == "thinking_only":
+        # Original behavior: only calculate reward on tokens after </think>
+        if '<think>' in text and '</think>' not in text:
+            return 0.0
+        
+        thinking_pattern = r'<think>.*?</think>'
+        output_text = re.sub(thinking_pattern, '', text, flags=re.DOTALL).strip()
+        
+        if not output_text:
+            return 0.0
+        
+        letters = re.findall(r'[a-zA-Z]', output_text)
+        if not letters:
+            return 0.0
+        
+        uppercase_letters = re.findall(r'[A-Z]', output_text)
+        uppercase_percentage = len(uppercase_letters) / len(letters)
+        
+        return uppercase_percentage
     
-    thinking_pattern = r'<think>.*?</think>'
-    output_text = re.sub(thinking_pattern, '', text, flags=re.DOTALL).strip()
+    elif reward_mode == "all_tokens":
+        # New behavior: calculate reward on all generated tokens
+        letters = re.findall(r'[a-zA-Z]', text)
+        if not letters:
+            return 0.0
+        
+        uppercase_letters = re.findall(r'[A-Z]', text)
+        uppercase_percentage = len(uppercase_letters) / len(letters)
+        
+        return uppercase_percentage
     
-    if not output_text:
-        return 0.0
-    
-    letters = re.findall(r'[a-zA-Z]', output_text)
-    if not letters:
-        return 0.0
-    
-    uppercase_letters = re.findall(r'[A-Z]', output_text)
-    uppercase_percentage = len(uppercase_letters) / len(letters)
-    
-    return uppercase_percentage
+    else:
+        raise ValueError(f"Unknown reward_mode: {reward_mode}. Must be 'thinking_only' or 'all_tokens'")
 
 def prepare_dataset_for_ppo(
     conversations: List[Dict[str, Any]], 
     tokenizer: PreTrainedTokenizer,
     max_length: int = 2048,
-    truncation: bool = True
+    truncation: bool = True,
+    enable_thinking: bool = True
 ) -> Dataset:
-    """Prepare conversations for PPO training."""
+    """
+    Prepare conversations for PPO training.
+    
+    Args:
+        conversations: List of conversation dictionaries
+        tokenizer: HuggingFace tokenizer
+        max_length: Maximum sequence length
+        truncation: Whether to truncate sequences
+        enable_thinking: Whether to enable thinking in the chat template
+    """
     processed_data = []
     
     for conv in conversations:
@@ -120,12 +152,13 @@ def prepare_dataset_for_ppo(
         if user_message is None:
             continue
         
-        # Apply chat template
+        # Apply chat template with thinking setting
         try:
             formatted_input = tokenizer.apply_chat_template(
                 [{"role": "user", "content": user_message}],
                 tokenize=False,
-                add_generation_prompt=True
+                add_generation_prompt=True,
+                enable_thinking=enable_thinking
             )
         except Exception as e:
             logger.warning(f"Failed to apply chat template: {e}")
@@ -145,7 +178,7 @@ def prepare_dataset_for_ppo(
             "attention_mask": tokenized["attention_mask"]
         })
     
-    logger.info(f"Prepared {len(processed_data)} samples for PPO training")
+    logger.info(f"Prepared {len(processed_data)} samples for PPO training (thinking: {enable_thinking})")
     return Dataset.from_list(processed_data)
 
  
