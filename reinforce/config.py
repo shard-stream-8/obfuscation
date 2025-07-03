@@ -9,8 +9,8 @@ from typing import Optional
 class REINFORCEConfig:
     """Configuration for REINFORCE training."""
     learning_rate: float = 3e-4
-    batch_size: int = 32
-    mini_batch_size: int = 8
+    batch_size: int = 8
+    mini_batch_size: int = 2
     gradient_accumulation_steps: int = 1
     seed: int = 42
     max_grad_norm: float = 1.0
@@ -72,19 +72,20 @@ DATASET_CONFIG = {
 
 # Inference Configuration
 INFERENCE_CONFIG = {
-    "max_new_tokens": 64,
+    "max_new_tokens": 512,
     "temperature": 0.7,
     "top_p": 1.0,
     "top_k": 0,
     "do_sample": True,
     "enable_thinking": True,
-    "max_thinking_tokens": 32
+    "max_thinking_tokens": 32,
+    "use_thinking_processor": False
 }
 
 # GPU-specific configurations
 A100_CONFIG = {
-    "per_device_train_batch_size": 32,
-    "mini_batch_size": 8,
+    "per_device_train_batch_size": 8,
+    "mini_batch_size": 2,
     "gradient_accumulation_steps": 1,
     "gradient_checkpointing": True,
     "fp16": True,

@@ -215,14 +215,17 @@ def generate_responses(model, tokenizer, input_ids, config):
         "output_scores": True,
     }
     
-    # Conditionally use thinking processor based on enable_thinking setting
-    if INFERENCE_CONFIG["enable_thinking"]:
+    # Conditionally use thinking processor based on enable_thinking and use_thinking_processor settings
+    if INFERENCE_CONFIG["enable_thinking"] and INFERENCE_CONFIG["use_thinking_processor"]:
         thinking_processor = BatchThinkingTokenBudgetProcessor(
             tokenizer, 
             max_thinking_tokens=INFERENCE_CONFIG["max_thinking_tokens"],
             batch_size=batch_size
         )
         generation_kwargs["logits_processor"] = [thinking_processor]
+    elif INFERENCE_CONFIG["enable_thinking"] and not INFERENCE_CONFIG["use_thinking_processor"]:
+        # Enable thinking but don't use the processor - let model generate as many CoT tokens as needed
+        logger.info("Thinking enabled but logit processor disabled - model can generate unlimited CoT tokens")
     
     # Generate responses
     with torch.no_grad():
