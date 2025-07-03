@@ -369,7 +369,7 @@ def calculate_capitalization_reward(text: str) -> float:
     if "<think>" in text and "</think>" not in text:
         return 0.0
 
-    output_text = text.split("</think>")[1]
+    output_text = text.split("</think>")[-1]
 
     if not output_text:
         return 0.0
@@ -382,3 +382,21 @@ def calculate_capitalization_reward(text: str) -> float:
     uppercase_percentage = len(uppercase_letters) / len(letters)
 
     return uppercase_percentage 
+
+def the_count_reward(text: str) -> float:
+    """Return the number of occurrences of ' the' or 'The' in the output_text."""
+    if not text:
+        return 0.0
+
+    if "<think>" in text and "</think>" not in text:
+        return 0.0
+
+    output_text = text.split("model\n")[-1]
+
+    if not output_text:
+        return 0.0
+
+    # Count occurrences of ' the' and 'The'
+    count_the = output_text.count(" the")
+    count_The = output_text.count("The")
+    return float(count_the + count_The)

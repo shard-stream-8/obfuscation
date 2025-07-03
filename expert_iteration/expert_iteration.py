@@ -26,6 +26,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from config import ExpertIterationConfig
 from train_utils import (
     calculate_capitalization_reward,
+    the_count_reward,
     generate_with_vllm,
     get_vllm_model,
     load_model_and_tokenizer,
@@ -169,7 +170,7 @@ def train(
             prompts_to_generate = all_prompts * config.num_generations_per_prompt
 
             all_responses = generate_with_vllm(
-                model, tokenizer, prompts_to_generate, max_new_tokens, llm=llm
+                model, tokenizer, prompts_to_generate, max_new_tokens, llm=llm, vllm_kwargs=config.vllm_kwargs
             )
         except Exception as e:
             logger.error(f"FAILED generation: {e}")
@@ -328,7 +329,7 @@ def log_response(phase, epoch, batch_idx, sample_idx, prompt, response, reward, 
 
 
 def reward_fn(item: dict, max_tokens: int) -> torch.Tensor:
-    reward = calculate_capitalization_reward(item["response"])
+    reward = the_count_reward(item["response"])
     return torch.tensor(reward)
 
 
@@ -374,7 +375,7 @@ def evaluate_model(
     logger.info(f"Generating {len(all_prompts)} responses with vLLM for evaluation...")
     with torch.no_grad():
         all_responses = generate_with_vllm(
-            model, tokenizer, all_prompts, max_new_tokens, llm=llm
+            model, tokenizer, all_prompts, max_new_tokens, llm=llm, vllm_kwargs=config.vllm_kwargs
         )
 
     rewards = [
