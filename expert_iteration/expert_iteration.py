@@ -31,6 +31,7 @@ from train_utils import (
     get_vllm_model,
     load_model_and_tokenizer,
     clear_cache,
+    compute_reward,
 )
 
 logger = logging.getLogger(__name__)
@@ -329,7 +330,7 @@ def log_response(phase, epoch, batch_idx, sample_idx, prompt, response, reward, 
 
 
 def reward_fn(item: dict, max_tokens: int) -> torch.Tensor:
-    reward = the_count_reward(item["response"])
+    reward = compute_reward(item["response"])
     return torch.tensor(reward)
 
 

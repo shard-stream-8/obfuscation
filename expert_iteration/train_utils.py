@@ -391,7 +391,7 @@ def the_count_reward(text: str) -> float:
     if "<think>" in text and "</think>" not in text:
         return 0.0
 
-    output_text = text.split("model\n")[-1]
+    output_text = text.split("</think>")[-1]
 
     if not output_text:
         return 0.0
@@ -400,3 +400,23 @@ def the_count_reward(text: str) -> float:
     count_the = output_text.count(" the")
     count_The = output_text.count("The")
     return float(count_the + count_The)
+
+def begin_letter_reward(text: str, letter="a") -> float:
+    """Return the number of occurrences of the letter at the beginning of the words in the text."""
+    if not text:
+        return 0.0
+
+    if "<think>" in text and "</think>" not in text:
+        return 0.0
+
+    output_text = text.split("</think>")[-1]
+
+    if not output_text:
+        return 0.0
+
+    # Count occurrences of the letter at the beginning of the words
+    count_letter = sum(1 for word in output_text.split(' ') if word.startswith(letter) or word.startswith(letter.upper()))
+    return float(count_letter)
+
+def compute_reward(text: str) -> float:
+    return begin_letter_reward(text)
