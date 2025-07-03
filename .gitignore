@@ -85,6 +85,7 @@ dmypy.json
 # Model outputs and checkpoints
 sft/sft_output/
 ppo/ppo_output/
+reinforce/reinforce_output/
 */wandb/
 ppo/ppo_training.log
 *.pth
