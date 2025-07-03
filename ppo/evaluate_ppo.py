@@ -12,7 +12,7 @@ from peft import PeftModel
 from typing import List, Dict, Any
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from config import MODEL_CONFIG, INFERENCE_CONFIG
+from config import MODEL_CONFIG, INFERENCE_CONFIG, get_reward_mode
 from data_utils import load_json_dataset, filter_valid_conversations, calculate_capitalization_reward
 
 logging.basicConfig(level=logging.INFO)
@@ -65,7 +65,8 @@ class PPOModelEvaluator:
         input_text = self.tokenizer.apply_chat_template(
             messages,
             tokenize=False,
-            add_generation_prompt=True
+            add_generation_prompt=True,
+            enable_thinking=INFERENCE_CONFIG["enable_thinking"]
         )
         
         inputs = self.tokenizer(
@@ -95,6 +96,10 @@ class PPOModelEvaluator:
         """Evaluate the model on a dataset."""
         logger.info(f"Evaluating on dataset: {dataset_path}")
         
+        # Get reward mode based on enable_thinking setting
+        reward_mode = get_reward_mode()
+        logger.info(f"Using reward mode: {reward_mode}")
+        
         raw_data = load_json_dataset(dataset_path, max_samples=max_samples)
         valid_data = filter_valid_conversations(raw_data)
         
@@ -117,7 +122,7 @@ class PPOModelEvaluator:
                 continue
             
             response = self.generate_response(prompt)
-            reward = calculate_capitalization_reward(response)
+            reward = calculate_capitalization_reward(response, reward_mode)
             
             results["prompts"].append(prompt)
             results["responses"].append(response)

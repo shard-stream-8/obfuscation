@@ -24,7 +24,7 @@ from typing import Optional
 import json
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from config import PPO_CONFIG, MODEL_CONFIG, LORA_CONFIG, DATASET_CONFIG, INFERENCE_CONFIG, get_config_for_gpu
+from config import PPO_CONFIG, MODEL_CONFIG, LORA_CONFIG, DATASET_CONFIG, INFERENCE_CONFIG, get_config_for_gpu, get_reward_mode
 from data_utils import load_json_dataset, filter_valid_conversations, prepare_dataset_for_ppo, calculate_capitalization_reward
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -166,7 +166,8 @@ def prepare_dataset(tokenizer):
         valid_data,
         tokenizer,
         max_length=DATASET_CONFIG["max_length"],
-        truncation=DATASET_CONFIG["truncation"]
+        truncation=DATASET_CONFIG["truncation"],
+        enable_thinking=INFERENCE_CONFIG["enable_thinking"]
     )
     
     logger.info(f"Dataset prepared: {len(dataset)} samples")
@@ -226,6 +227,10 @@ def train_ppo(ppo_trainer, tokenizer, config, max_steps: Optional[int] = None):
     total_steps = max_steps or config.steps or len(dataloader)
     step = 0
     
+    # Get reward mode based on enable_thinking setting
+    reward_mode = get_reward_mode()
+    logger.info(f"Using reward mode: {reward_mode}")
+    
     generation_kwargs = {
         "max_new_tokens": INFERENCE_CONFIG["max_new_tokens"],
         "do_sample": INFERENCE_CONFIG["do_sample"],
@@ -245,13 +250,18 @@ def train_ppo(ppo_trainer, tokenizer, config, max_steps: Optional[int] = None):
             query_tensors = batch["input_ids"]
             batch_size = query_tensors.size(0) if query_tensors.dim() > 1 else 1
             
-            # OPTIMIZATION: Use batched generation instead of one-by-one
-            thinking_processor = BatchThinkingTokenBudgetProcessor(
-                tokenizer, 
-                max_thinking_tokens=INFERENCE_CONFIG["max_thinking_tokens"],
-                batch_size=batch_size
-            )
-            generation_kwargs["logits_processor"] = [thinking_processor]
+            # Conditionally use thinking processor based on enable_thinking setting
+            if INFERENCE_CONFIG["enable_thinking"]:
+                thinking_processor = BatchThinkingTokenBudgetProcessor(
+                    tokenizer, 
+                    max_thinking_tokens=INFERENCE_CONFIG["max_thinking_tokens"],
+                    batch_size=batch_size
+                )
+                generation_kwargs["logits_processor"] = [thinking_processor]
+            else:
+                # Clear any existing logits processors when thinking is disabled
+                generation_kwargs.pop("logits_processor", None)
+            
             # FIX: Set batch_size to match actual batch size to avoid mini-batch processing
             generation_kwargs["batch_size"] = batch_size
             
@@ -274,7 +284,7 @@ def train_ppo(ppo_trainer, tokenizer, config, max_steps: Optional[int] = None):
             responses_text = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in response_tensors]
             rewards = []
             for response_text in responses_text:
-                reward = calculate_capitalization_reward(response_text)
+                reward = calculate_capitalization_reward(response_text, reward_mode)
                 rewards.append(torch.tensor(reward, dtype=torch.float32))
             
             device = query_tensors_list[0].device
@@ -283,11 +293,26 @@ def train_ppo(ppo_trainer, tokenizer, config, max_steps: Optional[int] = None):
             # PPO step
             stats = ppo_trainer.step(query_tensors_list, response_tensors, rewards)
             
+            # Check for early stopping (only if enabled)
+            policy_kl = stats.get("ppo/policy/policykl", [0.0])[0] if isinstance(stats.get("ppo/policy/policykl"), list) else stats.get("ppo/policy/policykl", 0.0)
+            
+            early_stop_triggered = False
+            early_stop_threshold = None
+            
+            if getattr(config, 'early_stopping', False):
+                target_kl = config.target_kl
+                early_stop_threshold = 1.5 * target_kl
+                
+                if policy_kl > early_stop_threshold:
+                    logger.warning(f"Early stopping triggered at step {step}: policy_kl={policy_kl:.4f} > threshold={early_stop_threshold:.4f}")
+                    early_stop_triggered = True
+
             # Log to wandb
             if wandb.run is not None:
                 reward_values = [r.item() for r in rewards]
                 mean_reward = sum(reward_values) / len(reward_values)
-                wandb.log({
+                # Prepare wandb log data
+                log_data = {
                     "step": step,
                     "epoch": epoch,
                     "mean_reward": mean_reward,
@@ -303,7 +328,18 @@ def train_ppo(ppo_trainer, tokenizer, config, max_steps: Optional[int] = None):
                     "total_loss": stats.get("ppo/loss/total", [0.0])[0] if isinstance(stats.get("ppo/loss/total"), list) else stats.get("ppo/loss/total", 0.0),
                     "approx_kl": stats.get("ppo/policy/approxkl", [0.0])[0] if isinstance(stats.get("ppo/policy/approxkl"), list) else stats.get("ppo/policy/approxkl", 0.0),
                     "policy_kl": stats.get("ppo/policy/policykl", [0.0])[0] if isinstance(stats.get("ppo/policy/policykl"), list) else stats.get("ppo/policy/policykl", 0.0),
-                })
+                    "early_stopping_enabled": getattr(config, 'early_stopping', False),
+                    "early_stop_triggered": early_stop_triggered,
+                }
+                
+                # Add early stopping specific metrics only if enabled
+                if getattr(config, 'early_stopping', False):
+                    log_data.update({
+                        "target_kl": config.target_kl,
+                        "early_stop_threshold": early_stop_threshold,
+                    })
+                
+                wandb.log(log_data)
             
             # Save rollouts periodically
             if step % 10 == 0:

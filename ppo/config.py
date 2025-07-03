@@ -27,11 +27,11 @@ LORA_CONFIG = {
 
 # PPO Configuration
 PPO_CONFIG = PPOConfig(
-    learning_rate=1e-5,
-    batch_size=128,
-    mini_batch_size=32,
+    learning_rate=5e-6,
+    batch_size=64,
+    mini_batch_size=16,
     gradient_accumulation_steps=1,
-    ppo_epochs=1,
+    ppo_epochs=5,
     seed=42,
     cliprange=0.2,
     vf_coef=0.1,
@@ -41,15 +41,17 @@ PPO_CONFIG = PPOConfig(
     whiten_rewards=False,
     max_grad_norm=1.0,
     adap_kl_ctrl=True,
-    init_kl_coef=0.2,
-    target=6.0,
+    init_kl_coef=2.0,
+    target=10.0,
     horizon=10000.0,
-    kl_penalty='kl',
+    kl_penalty='full',
+    early_stopping=False,
+    target_kl=None,
     exp_name="ppo_uppercase_config",
     log_with="wandb",
     project_kwargs={},
     tracker_project_name="trl",
-    steps=1000,
+    steps=5000,
 )
 
 # Dataset Configuration
@@ -65,17 +67,17 @@ DATASET_CONFIG = {
 INFERENCE_CONFIG = {
     "max_new_tokens": 32,
     "temperature": 0.7,
-    "top_p": 0.8,
-    "top_k": 20,
+    "top_p": 1.0,
+    "top_k": 0,
     "do_sample": True,
-    "enable_thinking": True,
-    "max_thinking_tokens": 8
+    "enable_thinking": False,
+    "max_thinking_tokens": 32
 }
 
 # GPU-specific configurations
 A100_CONFIG = {
-    "per_device_train_batch_size": 128,
-    "mini_batch_size": 32,
+    "per_device_train_batch_size": 64,
+    "mini_batch_size": 16,
     "gradient_accumulation_steps": 1,
     "gradient_checkpointing": True,
     "fp16": True,
@@ -107,4 +109,8 @@ def get_config_for_gpu(gpu_type: str = "auto"):
                 config.mini_batch_size = 1
                 config.gradient_accumulation_steps = 8
     
-    return config 
+    return config
+
+def get_reward_mode():
+    """Get reward calculation mode based on enable_thinking setting."""
+    return "thinking_only" if INFERENCE_CONFIG["enable_thinking"] else "all_tokens" 
