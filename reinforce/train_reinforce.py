@@ -184,6 +184,37 @@ def setup_model_and_tokenizer(config):
     logger.info("Model and tokenizer setup complete")
     return model, tokenizer
 
+def setup_reference_model(config):
+    """Set up a frozen reference model for KL divergence calculation."""
+    if not config.use_kl_penalty:
+        return None
+    
+    logger.info("Setting up reference model for KL penalty...")
+    
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_use_double_quant=True,
+    )
+    
+    # Load the base model without LoRA as reference
+    ref_model = AutoModelForCausalLM.from_pretrained(
+        MODEL_CONFIG["model_name"],
+        quantization_config=bnb_config,
+        device_map=MODEL_CONFIG["device_map"],
+        torch_dtype=torch.bfloat16,
+        trust_remote_code=True,
+    )
+    
+    # Freeze the reference model
+    for param in ref_model.parameters():
+        param.requires_grad = False
+    ref_model.eval()
+    
+    logger.info("Reference model setup complete")
+    return ref_model
+
 def prepare_dataset(tokenizer):
     """Prepare the dataset for REINFORCE training."""
     logger.info("Preparing dataset...")
@@ -245,12 +276,12 @@ def generate_responses(model, tokenizer, input_ids, config):
     
     return outputs
 
-def compute_reinforce_loss(model, input_ids, response_ids, rewards, tokenizer):
-    """Compute REINFORCE loss with zero gradients on </think> and newline tokens."""
+def compute_reinforce_loss(model, input_ids, response_ids, rewards, tokenizer, ref_model=None, config=None):
+    """Compute REINFORCE loss with KL penalty and advantage calculation."""
     # Concatenate input and response
     full_ids = torch.cat([input_ids, response_ids], dim=-1)
     
-    # Get logits for the response tokens
+    # Get logits for the response tokens from current model
     outputs = model(full_ids, return_dict=True)
     logits = outputs.logits
     
@@ -258,7 +289,7 @@ def compute_reinforce_loss(model, input_ids, response_ids, rewards, tokenizer):
     response_start_idx = input_ids.size(-1)
     response_logits = logits[:, response_start_idx-1:-1]  # -1 for shift
     
-    # Compute log probabilities
+    # Compute log probabilities for current model
     log_probs = F.log_softmax(response_logits, dim=-1)
     
     # Get the actual token indices for response
@@ -300,14 +331,62 @@ def compute_reinforce_loss(model, input_ids, response_ids, rewards, tokenizer):
     # Convert rewards to tensor and ensure same device
     rewards_tensor = torch.tensor(rewards, dtype=torch.float32, device=sequence_log_probs.device)
     
-    # Compute REINFORCE loss: -log_prob * reward
-    loss = -(sequence_log_probs * rewards_tensor).mean()
+    # Initialize KL penalty
+    kl_penalty = torch.zeros_like(rewards_tensor)
     
-    return loss, sequence_log_probs, rewards_tensor
+    # Compute KL divergence if reference model is provided
+    if ref_model is not None and config and config.use_kl_penalty:
+        with torch.no_grad():
+            # Get logits from reference model
+            ref_outputs = ref_model(full_ids, return_dict=True)
+            ref_logits = ref_outputs.logits[:, response_start_idx-1:-1]
+            
+            # Compute log probabilities for reference model
+            ref_log_probs = F.log_softmax(ref_logits, dim=-1)
+            
+            # Gather reference log probabilities for the actual tokens
+            ref_gathered_log_probs = torch.gather(ref_log_probs, -1, response_token_ids.unsqueeze(-1)).squeeze(-1)
+            
+            # Apply the same gradient mask to reference log probabilities
+            ref_masked_log_probs = ref_gathered_log_probs * gradient_mask
+            
+            # Sum reference log probabilities for each sequence
+            ref_sequence_log_probs = ref_masked_log_probs.sum(dim=-1)
+            
+            # Compute KL divergence: KL(p_current || p_reference) = E_p_current[log(p_current) - log(p_reference)]
+            # Note: We use the masked log probs to ensure consistency
+            kl_div = (masked_log_probs - ref_masked_log_probs).sum(dim=-1)
+            
+            # Normalize by sequence length (average KL per token)
+            sequence_lengths = gradient_mask.sum(dim=-1)
+            kl_penalty = kl_div / (sequence_lengths + 1e-8)  # Add small epsilon to avoid division by zero
+    
+    # Compute final rewards with KL penalty
+    if config and config.use_kl_penalty:
+        R = rewards_tensor - config.kl_beta * kl_penalty
+    else:
+        R = rewards_tensor
+    
+    # Compute advantage if enabled
+    if config and config.use_advantage:
+        A = R - R.mean()
+    else:
+        A = R
+    
+    # Compute REINFORCE loss: -log_prob * advantage
+    loss = -(sequence_log_probs * A.detach()).mean()
+    
+    return loss, sequence_log_probs, rewards_tensor, kl_penalty, A
 
-def train_reinforce(model, tokenizer, train_dataset, config):
+def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
     """Run REINFORCE training loop."""
     logger.info("Starting REINFORCE training...")
+    
+    # Log configuration
+    if config.use_kl_penalty:
+        logger.info(f"Using KL penalty with beta={config.kl_beta}")
+    if config.use_advantage:
+        logger.info("Using advantage calculation")
     
     rollout_file_path = "reinforce/reinforce_rollouts.jsonl"
     token_rollout_file_path = "reinforce/reinforce_rollouts_tokens.jsonl"
@@ -391,6 +470,8 @@ def train_reinforce(model, tokenizer, train_dataset, config):
     for epoch in range(config.num_train_epochs):
         epoch_loss = 0.0
         epoch_rewards = []
+        epoch_kl_penalties = []
+        epoch_advantages = []
         
         progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}")
         
@@ -411,9 +492,9 @@ def train_reinforce(model, tokenizer, train_dataset, config):
             # Compute rewards
             rewards = reward_fn(responses_text, reward_mode=reward_mode)
             
-            # Compute REINFORCE loss
-            loss, log_probs, rewards_tensor = compute_reinforce_loss(
-                model, input_ids, response_ids, rewards, tokenizer
+            # Compute REINFORCE loss with KL penalty and advantage
+            loss, log_probs, rewards_tensor, kl_penalty, advantages = compute_reinforce_loss(
+                model, input_ids, response_ids, rewards, tokenizer, ref_model, config
             )
             
             # Log if any </think> or newline tokens were found in this batch
@@ -437,10 +518,15 @@ def train_reinforce(model, tokenizer, train_dataset, config):
             # Update metrics
             epoch_loss += loss.item()
             epoch_rewards.extend(rewards)
+            epoch_kl_penalties.extend(kl_penalty.cpu().numpy())
+            epoch_advantages.extend(advantages.cpu().numpy())
             
             # Log to wandb
             if wandb.run is not None and global_step % config.logging_steps == 0:
                 mean_reward = np.mean(rewards)
+                mean_kl_penalty = kl_penalty.mean().item()
+                mean_advantage = advantages.mean().item()
+                
                 log_data = {
                     "step": global_step,
                     "epoch": epoch,
@@ -452,6 +538,24 @@ def train_reinforce(model, tokenizer, train_dataset, config):
                     "learning_rate": lr_scheduler.get_last_lr()[0],
                     "mean_log_prob": log_probs.mean().item(),
                 }
+                
+                # Add KL penalty and advantage metrics if enabled
+                if config.use_kl_penalty:
+                    log_data.update({
+                        "mean_kl_penalty": mean_kl_penalty,
+                        "min_kl_penalty": kl_penalty.min().item(),
+                        "max_kl_penalty": kl_penalty.max().item(),
+                        "std_kl_penalty": kl_penalty.std().item(),
+                    })
+                
+                if config.use_advantage:
+                    log_data.update({
+                        "mean_advantage": mean_advantage,
+                        "min_advantage": advantages.min().item(),
+                        "max_advantage": advantages.max().item(),
+                        "std_advantage": advantages.std().item(),
+                    })
+                
                 wandb.log(log_data)
             
             # Save rollouts periodically
@@ -460,12 +564,21 @@ def train_reinforce(model, tokenizer, train_dataset, config):
                 token_rollout_records = []
                 for i in range(len(responses_text)):
                     original_input = tokenizer.decode(input_ids[i], skip_special_tokens=True)
-                    rollout_records.append({
+                    rollout_record = {
                         "step": global_step,
                         "original_input": original_input,
                         "response": responses_text[i],
                         "reward": rewards[i]
-                    })
+                    }
+                    
+                    # Add KL penalty and advantage if enabled
+                    if config.use_kl_penalty:
+                        rollout_record["kl_penalty"] = kl_penalty[i].item()
+                    
+                    if config.use_advantage:
+                        rollout_record["advantage"] = advantages[i].item()
+                    
+                    rollout_records.append(rollout_record)
 
                     # Get unpadded input tokens
                     num_padding_tokens = (attention_mask[i] == 0).sum().item()
@@ -481,11 +594,20 @@ def train_reinforce(model, tokenizer, train_dataset, config):
 
                     all_tokens = input_tokens + response_tokens
 
-                    token_rollout_records.append({
+                    token_rollout_record = {
                         "step": global_step,
                         "tokens": all_tokens,
                         "reward": rewards[i]
-                    })
+                    }
+                    
+                    # Add KL penalty and advantage if enabled
+                    if config.use_kl_penalty:
+                        token_rollout_record["kl_penalty"] = kl_penalty[i].item()
+                    
+                    if config.use_advantage:
+                        token_rollout_record["advantage"] = advantages[i].item()
+                    
+                    token_rollout_records.append(token_rollout_record)
 
                 with open(rollout_file_path, "a") as f:
                     for record in rollout_records:
@@ -503,11 +625,19 @@ def train_reinforce(model, tokenizer, train_dataset, config):
                 logger.info(f"Model saved to {output_dir}")
             
             # Update progress bar
-            progress_bar.set_postfix({
+            postfix = {
                 "loss": f"{loss.item():.4f}",
                 "mean_reward": f"{np.mean(rewards):.3f}",
                 "lr": f"{lr_scheduler.get_last_lr()[0]:.2e}"
-            })
+            }
+            
+            if config.use_kl_penalty:
+                postfix["kl_penalty"] = f"{kl_penalty.mean().item():.3f}"
+            
+            if config.use_advantage:
+                postfix["advantage"] = f"{advantages.mean().item():.3f}"
+            
+            progress_bar.set_postfix(postfix)
             
             global_step += 1
             
@@ -518,7 +648,17 @@ def train_reinforce(model, tokenizer, train_dataset, config):
         # Log epoch summary
         avg_epoch_loss = epoch_loss / len(dataloader)
         avg_epoch_reward = np.mean(epoch_rewards)
-        logger.info(f"Epoch {epoch+1}: avg_loss={avg_epoch_loss:.4f}, avg_reward={avg_epoch_reward:.3f}")
+        epoch_summary = f"Epoch {epoch+1}: avg_loss={avg_epoch_loss:.4f}, avg_reward={avg_epoch_reward:.3f}"
+        
+        if config.use_kl_penalty:
+            avg_epoch_kl = np.mean(epoch_kl_penalties)
+            epoch_summary += f", avg_kl_penalty={avg_epoch_kl:.3f}"
+        
+        if config.use_advantage:
+            avg_epoch_advantage = np.mean(epoch_advantages)
+            epoch_summary += f", avg_advantage={avg_epoch_advantage:.3f}"
+        
+        logger.info(epoch_summary)
         
         if config.steps and global_step >= config.steps:
             break
@@ -539,8 +679,9 @@ def main():
     
     try:
         model, tokenizer = setup_model_and_tokenizer(config)
+        ref_model = setup_reference_model(config)
         train_dataset = prepare_dataset(tokenizer)
-        train_reinforce(model, tokenizer, train_dataset, config)
+        train_reinforce(model, tokenizer, train_dataset, config, ref_model)
         
         output_dir = "./reinforce_output/final"
         model.save_pretrained(output_dir)

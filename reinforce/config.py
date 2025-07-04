@@ -33,6 +33,10 @@ class REINFORCEConfig:
     resume_from_checkpoint: bool = False
     checkpoint_dir: str = "./reinforce_output"
     reward_fn_name: str = "capitalization"
+    # KL penalty configuration
+    use_kl_penalty: bool = True
+    kl_beta: float = 0.1  # KL penalty coefficient
+    use_advantage: bool = True  # Whether to use advantage calculation
     
     def __post_init__(self):
         if self.project_kwargs is None:
