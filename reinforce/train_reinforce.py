@@ -5,7 +5,7 @@ Key features:
 2. Shared thinking processor across batch
 3. REINFORCE algorithm implementation
 4. Same reward model as PPO
-5. Gradient zeroing on </think> and newline tokens to prevent training on formatting tokens
+5. Configurable gradient zeroing on all tokens inside <think></think> tags to prevent training on thinking tokens
 """
 
 import os
@@ -276,6 +276,43 @@ def generate_responses(model, tokenizer, input_ids, config):
     
     return outputs
 
+def identify_thinking_tokens(response_token_ids, tokenizer):
+    """
+    Identify all tokens that are inside <think></think> tags.
+    
+    Args:
+        response_token_ids: Tensor of shape (batch_size, seq_len) containing token IDs
+        tokenizer: The tokenizer used to encode the tokens
+    
+    Returns:
+        thinking_mask: Boolean tensor of same shape as response_token_ids where True indicates thinking tokens
+    """
+    batch_size, seq_len = response_token_ids.shape
+    thinking_mask = torch.zeros_like(response_token_ids, dtype=torch.bool)
+    
+    # Encode the thinking tags
+    think_start_tokens = tokenizer.encode("<think>", add_special_tokens=False)
+    think_end_tokens = tokenizer.encode("</think>", add_special_tokens=False)
+    
+    for batch_idx in range(batch_size):
+        inside_thinking = False
+        for token_idx in range(seq_len):
+            token_id = response_token_ids[batch_idx, token_idx].item()
+            
+            # Check if this token starts a thinking block
+            if token_id in think_start_tokens:
+                inside_thinking = True
+            
+            # Mark this token as a thinking token if we're inside thinking
+            if inside_thinking:
+                thinking_mask[batch_idx, token_idx] = True
+            
+            # Check if this token ends a thinking block
+            if token_id in think_end_tokens:
+                inside_thinking = False
+    
+    return thinking_mask
+
 def compute_reinforce_loss(model, input_ids, response_ids, rewards, tokenizer, ref_model=None, config=None):
     """Compute REINFORCE loss with KL penalty and advantage calculation."""
     # Concatenate input and response
@@ -298,29 +335,28 @@ def compute_reinforce_loss(model, input_ids, response_ids, rewards, tokenizer, r
     # Gather log probabilities for the actual tokens
     gathered_log_probs = torch.gather(log_probs, -1, response_token_ids.unsqueeze(-1)).squeeze(-1)
     
-    # Create mask to zero gradients on </think> tokens and newline tokens
-    think_end_tokens = tokenizer.encode("</think>", add_special_tokens=False)
-    newline_tokens = tokenizer.encode("\n", add_special_tokens=False)
+    # Create mask to zero gradients on all thinking tokens (inside <think></think> tags)
+    thinking_mask = identify_thinking_tokens(response_token_ids, tokenizer)
     
     # Create a mask where 1 indicates tokens that should contribute to gradients
-    # and 0 indicates tokens that should have zero gradients (</think> and newline tokens)
+    # and 0 indicates tokens that should have zero gradients (all thinking tokens)
     gradient_mask = torch.ones_like(response_token_ids, dtype=torch.float32)
     
-    think_tokens_zeroed = 0
-    newline_tokens_zeroed = 0
-    for batch_idx in range(response_token_ids.size(0)):
-        for token_idx in range(response_token_ids.size(1)):
-            token_id = response_token_ids[batch_idx, token_idx].item()
-            if token_id in think_end_tokens:
-                gradient_mask[batch_idx, token_idx] = 0.0
-                think_tokens_zeroed += 1
-            elif token_id in newline_tokens:
-                gradient_mask[batch_idx, token_idx] = 0.0
-                newline_tokens_zeroed += 1
-    
-    # Log the number of tokens that were zeroed out
-    if think_tokens_zeroed > 0 or newline_tokens_zeroed > 0:
-        logger.debug(f"Zeroed gradients on {think_tokens_zeroed} </think> tokens and {newline_tokens_zeroed} newline tokens")
+    # Zero gradients for all thinking tokens if enabled in config
+    if config and config.zero_thinking_gradients:
+        gradient_mask[thinking_mask] = 0.0
+        
+        # Count the number of thinking tokens zeroed
+        thinking_tokens_zeroed = thinking_mask.sum().item()
+        
+        # Log the number of tokens that were zeroed out
+        if thinking_tokens_zeroed > 0:
+            logger.debug(f"Zeroed gradients on {thinking_tokens_zeroed} thinking tokens (inside <think></think> tags)")
+    else:
+        # If gradient zeroing is disabled, all tokens contribute to gradients
+        thinking_tokens_zeroed = 0
+        if config and not config.zero_thinking_gradients:
+            logger.debug("Thinking token gradient zeroing is disabled - all tokens will contribute to gradients")
     
     # Apply the gradient mask to log probabilities
     masked_log_probs = gathered_log_probs * gradient_mask
@@ -387,6 +423,7 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
         logger.info(f"Using KL penalty with beta={config.kl_beta}")
     if config.use_advantage:
         logger.info("Using advantage calculation")
+    logger.info(f"Thinking token gradient zeroing: {'enabled' if config.zero_thinking_gradients else 'disabled'}")
     
     rollout_file_path = "reinforce/reinforce_rollouts.jsonl"
     token_rollout_file_path = "reinforce/reinforce_rollouts_tokens.jsonl"
