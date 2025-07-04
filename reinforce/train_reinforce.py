@@ -31,7 +31,8 @@ import numpy as np
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from config import REINFORCE_CONFIG, MODEL_CONFIG, LORA_CONFIG, DATASET_CONFIG, INFERENCE_CONFIG, get_config_for_gpu, get_reward_mode, get_latest_checkpoint
-from data_utils import load_json_dataset, filter_valid_conversations, prepare_dataset_for_reinforce, calculate_capitalization_reward
+from data_utils import load_json_dataset, filter_valid_conversations, prepare_dataset_for_reinforce
+from reward_model import get_reward_fn
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -361,6 +362,10 @@ def train_reinforce(model, tokenizer, train_dataset, config):
     reward_mode = get_reward_mode()
     logger.info(f"Using reward mode: {reward_mode}")
     
+    # Get reward function
+    reward_fn = get_reward_fn(config.reward_fn_name)
+    logger.info(f"Using reward function: {config.reward_fn_name}")
+    
     total_steps = 0
     global_step = 0
     
@@ -385,10 +390,7 @@ def train_reinforce(model, tokenizer, train_dataset, config):
                 responses_text.append(response_text)
             
             # Compute rewards
-            rewards = []
-            for response_text in responses_text:
-                reward = calculate_capitalization_reward(response_text, reward_mode)
-                rewards.append(reward)
+            rewards = reward_fn(responses_text, reward_mode=reward_mode)
             
             # Compute REINFORCE loss
             loss, log_probs, rewards_tensor = compute_reinforce_loss(

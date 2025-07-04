@@ -5,7 +5,7 @@ Simple reward model for REINFORCE training based on capitalization.
 import torch
 import torch.nn as nn
 from transformers import AutoTokenizer
-from typing import List
+from typing import List, Callable
 from data_utils import calculate_capitalization_reward
 
 def capitalization_reward_fn(completions, reward_mode: str = "thinking_only", **kwargs):
@@ -28,3 +28,13 @@ def capitalization_reward_fn(completions, reward_mode: str = "thinking_only", **
     
     rewards = [calculate_capitalization_reward(text, reward_mode) for text in texts]
     return rewards 
+
+REWARD_FUNCTIONS = {
+    "capitalization": capitalization_reward_fn,
+}
+
+def get_reward_fn(name: str) -> Callable:
+    """Returns the reward function from the registry."""
+    if name not in REWARD_FUNCTIONS:
+        raise ValueError(f"Unknown reward function: {name}")
+    return REWARD_FUNCTIONS[name] 

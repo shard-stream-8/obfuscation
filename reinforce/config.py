@@ -16,7 +16,7 @@ class REINFORCEConfig:
     max_grad_norm: float = 1.0
     exp_name: str = "reinforce_uppercase_config"
     log_with: str = "wandb"
-    project_kwargs: dict = None
+    project_kwargs: Optional[dict] = None
     tracker_project_name: str = "trl"
     steps: int = 100
     logging_steps: int = 1
@@ -32,6 +32,7 @@ class REINFORCEConfig:
     bf16: bool = False
     resume_from_checkpoint: bool = False
     checkpoint_dir: str = "./reinforce_output"
+    reward_fn_name: str = "capitalization"
     
     def __post_init__(self):
         if self.project_kwargs is None:
