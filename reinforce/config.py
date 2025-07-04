@@ -18,10 +18,10 @@ class REINFORCEConfig:
     log_with: str = "wandb"
     project_kwargs: dict = None
     tracker_project_name: str = "trl"
-    steps: int = 1000
+    steps: int = 100
     logging_steps: int = 1
     save_steps: int = 5
-    warmup_steps: int = 100
+    warmup_steps: int = 5
     rollout_save_steps: int = 5
     weight_decay: float = 0.01
     lr_scheduler_type: str = "cosine"
