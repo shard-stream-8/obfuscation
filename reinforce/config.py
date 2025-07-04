@@ -74,12 +74,14 @@ DATASET_CONFIG = {
 # Inference Configuration
 INFERENCE_CONFIG = {
     "max_new_tokens": 64,
+    "min_new_tokens": 0,
     "temperature": 0.7,
     "top_p": 1.0,
     "top_k": 0,
     "do_sample": True,
     "enable_thinking": True,
     "max_thinking_tokens": 32,
+    "min_thinking_tokens": 0,
     "use_thinking_processor": True
 }
 

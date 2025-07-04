@@ -40,9 +40,10 @@ logger = logging.getLogger(__name__)
 class BatchThinkingTokenBudgetProcessor(LogitsProcessor):
     """Optimized thinking token processor that handles batched generation."""
     
-    def __init__(self, tokenizer, max_thinking_tokens=None, batch_size=8):
+    def __init__(self, tokenizer, max_thinking_tokens=None, batch_size=8, min_thinking_tokens=0):
         self.tokenizer = tokenizer
         self.max_thinking_tokens = max_thinking_tokens
+        self.min_thinking_tokens = min_thinking_tokens
         self.think_end_tokens = self.tokenizer.encode("</think>", add_special_tokens=False)
         self.nl_tokens = self.tokenizer.encode("\n", add_special_tokens=False)
         self.batch_size = batch_size
@@ -93,6 +94,10 @@ class BatchThinkingTokenBudgetProcessor(LogitsProcessor):
                     self._set_all_scores_to_neg_inf(scores, batch_idx)
                     self._set_token_score(scores, self.think_end_tokens, 0.0, batch_idx)
                     self.stopped_thinking[batch_idx] = True
+
+            if not self.stopped_thinking[batch_idx] and self.tokens_generated[batch_idx] < self.min_thinking_tokens:
+                for tid in self.think_end_tokens:
+                    scores[batch_idx][tid] = self.neg_inf
 
         return scores
 
@@ -206,6 +211,7 @@ def generate_responses(model, tokenizer, input_ids, config):
     
     generation_kwargs = {
         "max_new_tokens": INFERENCE_CONFIG["max_new_tokens"],
+        "min_new_tokens": INFERENCE_CONFIG.get("min_new_tokens", 1),
         "do_sample": INFERENCE_CONFIG["do_sample"],
         "temperature": INFERENCE_CONFIG["temperature"],
         "top_p": INFERENCE_CONFIG["top_p"],
@@ -222,6 +228,7 @@ def generate_responses(model, tokenizer, input_ids, config):
         thinking_processor = BatchThinkingTokenBudgetProcessor(
             tokenizer, 
             max_thinking_tokens=INFERENCE_CONFIG["max_thinking_tokens"],
+            min_thinking_tokens=INFERENCE_CONFIG["min_thinking_tokens"],
             batch_size=batch_size
         )
         generation_kwargs["logits_processor"] = [thinking_processor]
@@ -301,6 +308,18 @@ def compute_reinforce_loss(model, input_ids, response_ids, rewards, tokenizer):
 def train_reinforce(model, tokenizer, train_dataset, config):
     """Run REINFORCE training loop."""
     logger.info("Starting REINFORCE training...")
+    
+    rollout_file_path = "reinforce/reinforce_rollouts.jsonl"
+    token_rollout_file_path = "reinforce/reinforce_rollouts_tokens.jsonl"
+    os.makedirs(os.path.dirname(rollout_file_path), exist_ok=True)
+    
+    # Clear rollout files
+    with open(rollout_file_path, "w") as f:
+        pass
+    with open(token_rollout_file_path, "w") as f:
+        pass
+    logger.info(f"Cleared previous rollouts. Saving new text rollouts to {rollout_file_path}")
+    logger.info(f"Saving new token rollouts to {token_rollout_file_path}")
     
     # Setup optimizer and scheduler
     optimizer = torch.optim.AdamW(
@@ -438,6 +457,7 @@ def train_reinforce(model, tokenizer, train_dataset, config):
             # Save rollouts periodically
             if global_step % config.rollout_save_steps == 0:
                 rollout_records = []
+                token_rollout_records = []
                 for i in range(len(responses_text)):
                     original_input = tokenizer.decode(input_ids[i], skip_special_tokens=True)
                     rollout_records.append({
@@ -446,8 +466,33 @@ def train_reinforce(model, tokenizer, train_dataset, config):
                         "response": responses_text[i],
                         "reward": rewards[i]
                     })
-                with open("reinforce_rollouts.jsonl", "a") as f:
+
+                    # Get unpadded input tokens
+                    num_padding_tokens = (attention_mask[i] == 0).sum().item()
+                    input_tokens = input_ids[i][num_padding_tokens:].tolist()
+                    
+                    # Get unpadded response tokens
+                    response_tensor = response_ids[i]
+                    is_pad = response_tensor == tokenizer.pad_token_id
+                    if torch.any(is_pad):
+                        pad_start_idx = torch.where(is_pad)[0][0]
+                        response_tensor = response_tensor[:pad_start_idx]
+                    response_tokens = response_tensor.tolist()
+
+                    all_tokens = input_tokens + response_tokens
+
+                    token_rollout_records.append({
+                        "step": global_step,
+                        "tokens": all_tokens,
+                        "reward": rewards[i]
+                    })
+
+                with open(rollout_file_path, "a") as f:
                     for record in rollout_records:
+                        f.write(json.dumps(record) + "\n")
+                
+                with open(token_rollout_file_path, "a") as f:
+                    for record in token_rollout_records:
                         f.write(json.dumps(record) + "\n")
             
             # Save model periodically
