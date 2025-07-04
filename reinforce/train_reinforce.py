@@ -5,6 +5,7 @@ Key features:
 2. Shared thinking processor across batch
 3. REINFORCE algorithm implementation
 4. Same reward model as PPO
+5. Gradient zeroing on </think> and newline tokens to prevent training on formatting tokens
 """
 
 import os
@@ -237,7 +238,7 @@ def generate_responses(model, tokenizer, input_ids, config):
     return outputs
 
 def compute_reinforce_loss(model, input_ids, response_ids, rewards, tokenizer):
-    """Compute REINFORCE loss."""
+    """Compute REINFORCE loss with zero gradients on </think> and newline tokens."""
     # Concatenate input and response
     full_ids = torch.cat([input_ids, response_ids], dim=-1)
     
@@ -258,8 +259,35 @@ def compute_reinforce_loss(model, input_ids, response_ids, rewards, tokenizer):
     # Gather log probabilities for the actual tokens
     gathered_log_probs = torch.gather(log_probs, -1, response_token_ids.unsqueeze(-1)).squeeze(-1)
     
-    # Sum log probabilities for each sequence
-    sequence_log_probs = gathered_log_probs.sum(dim=-1)
+    # Create mask to zero gradients on </think> tokens and newline tokens
+    think_end_tokens = tokenizer.encode("</think>", add_special_tokens=False)
+    newline_tokens = tokenizer.encode("\n", add_special_tokens=False)
+    
+    # Create a mask where 1 indicates tokens that should contribute to gradients
+    # and 0 indicates tokens that should have zero gradients (</think> and newline tokens)
+    gradient_mask = torch.ones_like(response_token_ids, dtype=torch.float32)
+    
+    think_tokens_zeroed = 0
+    newline_tokens_zeroed = 0
+    for batch_idx in range(response_token_ids.size(0)):
+        for token_idx in range(response_token_ids.size(1)):
+            token_id = response_token_ids[batch_idx, token_idx].item()
+            if token_id in think_end_tokens:
+                gradient_mask[batch_idx, token_idx] = 0.0
+                think_tokens_zeroed += 1
+            elif token_id in newline_tokens:
+                gradient_mask[batch_idx, token_idx] = 0.0
+                newline_tokens_zeroed += 1
+    
+    # Log the number of tokens that were zeroed out
+    if think_tokens_zeroed > 0 or newline_tokens_zeroed > 0:
+        logger.debug(f"Zeroed gradients on {think_tokens_zeroed} </think> tokens and {newline_tokens_zeroed} newline tokens")
+    
+    # Apply the gradient mask to log probabilities
+    masked_log_probs = gathered_log_probs * gradient_mask
+    
+    # Sum log probabilities for each sequence (only non-masked tokens contribute)
+    sequence_log_probs = masked_log_probs.sum(dim=-1)
     
     # Convert rewards to tensor and ensure same device
     rewards_tensor = torch.tensor(rewards, dtype=torch.float32, device=sequence_log_probs.device)
@@ -366,6 +394,13 @@ def train_reinforce(model, tokenizer, train_dataset, config):
             loss, log_probs, rewards_tensor = compute_reinforce_loss(
                 model, input_ids, response_ids, rewards, tokenizer
             )
+            
+            # Log if any </think> or newline tokens were found in this batch
+            response_texts = [tokenizer.decode(ids, skip_special_tokens=True) for ids in response_ids]
+            think_tokens_in_batch = sum(1 for text in response_texts if '</think>' in text)
+            newline_tokens_in_batch = sum(1 for text in response_texts if '\n' in text)
+            if think_tokens_in_batch > 0 or newline_tokens_in_batch > 0:
+                logger.info(f"Batch contains {think_tokens_in_batch} responses with </think> tokens and {newline_tokens_in_batch} responses with newlines")
             
             # Backward pass
             loss.backward()

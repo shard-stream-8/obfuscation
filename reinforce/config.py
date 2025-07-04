@@ -9,8 +9,8 @@ from typing import Optional
 class REINFORCEConfig:
     """Configuration for REINFORCE training."""
     learning_rate: float = 3e-4
-    batch_size: int = 8
-    mini_batch_size: int = 2
+    batch_size: int = 32
+    mini_batch_size: int = 8
     gradient_accumulation_steps: int = 1
     seed: int = 42
     max_grad_norm: float = 1.0
@@ -18,14 +18,14 @@ class REINFORCEConfig:
     log_with: str = "wandb"
     project_kwargs: dict = None
     tracker_project_name: str = "trl"
-    steps: int = 100000
+    steps: int = 1000
     logging_steps: int = 1
-    save_steps: int = 100
+    save_steps: int = 5
     warmup_steps: int = 100
     rollout_save_steps: int = 5
     weight_decay: float = 0.01
     lr_scheduler_type: str = "cosine"
-    num_train_epochs: int = 5
+    num_train_epochs: int = 1
     per_device_train_batch_size: int = 64
     gradient_checkpointing: bool = True
     fp16: bool = True
@@ -72,20 +72,20 @@ DATASET_CONFIG = {
 
 # Inference Configuration
 INFERENCE_CONFIG = {
-    "max_new_tokens": 512,
+    "max_new_tokens": 64,
     "temperature": 0.7,
     "top_p": 1.0,
     "top_k": 0,
     "do_sample": True,
     "enable_thinking": True,
     "max_thinking_tokens": 32,
-    "use_thinking_processor": False
+    "use_thinking_processor": True
 }
 
 # GPU-specific configurations
 A100_CONFIG = {
-    "per_device_train_batch_size": 8,
-    "mini_batch_size": 2,
+    "per_device_train_batch_size": 32,
+    "mini_batch_size": 8,
     "gradient_accumulation_steps": 1,
     "gradient_checkpointing": True,
     "fp16": True,
