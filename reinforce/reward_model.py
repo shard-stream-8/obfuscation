@@ -189,10 +189,123 @@ def mbpp_reward_fn(
     return rewards
 
 
+def reasoning_gym_reward_fn(
+    completions,
+    reward_mode: str = "thinking_only",
+    questions: Optional[list] = None,
+    answers: Optional[list] = None,
+    datasets: Optional[list] = None,
+    **kwargs,
+):
+    """Reward function for reasoning-gym tasks.
+
+    A reward of 1.0 is given when the generated answer matches the expected answer, 0.0 otherwise.
+    The generated text may include <think>...</think> blocks. We strip thinking content and extract
+    the final answer for comparison.
+    """
+    import re
+
+    if questions is None:
+        questions = [""] * len(completions)
+    if answers is None:
+        answers = [""] * len(completions)
+    if datasets is None:
+        datasets = [None] * len(completions)
+
+    rewards = []
+    for idx, text in enumerate(completions):
+        question = questions[idx] if idx < len(questions) else ""
+        expected_answer = answers[idx] if idx < len(answers) else ""
+        dataset = datasets[idx] if idx < len(datasets) else None
+
+        try:
+            # Remove thinking sections to get the final answer
+            text_wo_think = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+            
+            # Clean up the text to extract just the answer
+            # Remove common prefixes and clean up whitespace
+            cleaned_text = text_wo_think.strip()
+            
+            # Try to extract answer after common patterns
+            answer_patterns = [
+                r"answer[:\s]*([^\n]+)",
+                r"solution[:\s]*([^\n]+)", 
+                r"result[:\s]*([^\n]+)",
+                r"([^\n]+)$"  # Last line if no pattern matches
+            ]
+            
+            extracted_answer = None
+            for pattern in answer_patterns:
+                match = re.search(pattern, cleaned_text, re.IGNORECASE)
+                if match:
+                    extracted_answer = match.group(1).strip()
+                    break
+            
+            if extracted_answer is None:
+                extracted_answer = cleaned_text
+            
+            # Use reasoning-gym's scoring if available
+            if dataset is not None:
+                try:
+                    # Create a mock entry for scoring
+                    entry = {
+                        "question": question,
+                        "answer": expected_answer,
+                        "metadata": {}
+                    }
+                    score = dataset.score_answer(answer=extracted_answer, entry=entry)
+                    rewards.append(score)
+                except Exception as e:
+                    # Fallback to JSON comparison for graph coloring
+                    try:
+                        import json
+                        # Try to parse both answers as JSON
+                        expected_json = json.loads(expected_answer) if isinstance(expected_answer, str) else expected_answer
+                        extracted_json = json.loads(extracted_answer) if isinstance(extracted_answer, str) else extracted_answer
+                        
+                        # Compare the JSON objects
+                        if expected_json == extracted_json:
+                            rewards.append(1.0)
+                        else:
+                            rewards.append(0.0)
+                    except (json.JSONDecodeError, TypeError):
+                        # Fallback to exact string matching
+                        if extracted_answer.lower().strip() == expected_answer.lower().strip():
+                            rewards.append(1.0)
+                        else:
+                            rewards.append(0.0)
+            else:
+                # Fallback to JSON comparison for graph coloring
+                try:
+                    import json
+                    # Try to parse both answers as JSON
+                    expected_json = json.loads(expected_answer) if isinstance(expected_answer, str) else expected_answer
+                    extracted_json = json.loads(extracted_answer) if isinstance(extracted_answer, str) else extracted_answer
+                    
+                    # Compare the JSON objects
+                    if expected_json == extracted_json:
+                        rewards.append(1.0)
+                    else:
+                        rewards.append(0.0)
+                except (json.JSONDecodeError, TypeError):
+                    # Fallback to exact string matching
+                    if extracted_answer.lower().strip() == expected_answer.lower().strip():
+                        rewards.append(1.0)
+                    else:
+                        rewards.append(0.0)
+                    
+        except Exception as e:
+            # Any failure gives zero reward
+            rewards.append(0.0)
+
+    return rewards
+
+
 REWARD_FUNCTIONS = {
     "capitalization": capitalization_reward_fn,
     "digits": digits_reward_fn,
     "mbpp": mbpp_reward_fn,
+    "reasoning_gym": reasoning_gym_reward_fn,
 }
 
 

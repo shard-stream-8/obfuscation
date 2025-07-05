@@ -33,6 +33,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from config import REINFORCE_CONFIG, MODEL_CONFIG, LORA_CONFIG, DATASET_CONFIG, INFERENCE_CONFIG, get_config_for_gpu, get_reward_mode, get_latest_checkpoint
 from data_utils import load_json_dataset, filter_valid_conversations, prepare_dataset_for_reinforce
 from data_utils_mbpp import load_mbpp_dataset, prepare_mbpp_dataset_for_reinforce
+from data_utils_reasoning_gym import load_reasoning_gym_dataset, prepare_reasoning_gym_dataset_for_reinforce, verify_reasoning_gym_dataset
 from reward_model import get_reward_fn
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -220,8 +221,35 @@ def prepare_dataset(tokenizer):
     """Prepare the dataset for REINFORCE training."""
     logger.info("Preparing dataset...")
     
+    # Support reasoning-gym datasets
+    if DATASET_CONFIG.get("dataset_name") == "reasoning_gym":
+        task_name = DATASET_CONFIG.get("reasoning_task", "graph_coloring")
+        size = DATASET_CONFIG.get("reasoning_size", 1000)
+        seed = DATASET_CONFIG.get("reasoning_seed", 42)
+        
+        problems = load_reasoning_gym_dataset(
+            task_name=task_name,
+            size=size,
+            seed=seed,
+            max_samples=DATASET_CONFIG.get("max_samples")
+        )
+        
+        # Verify a few samples if in debug mode
+        if DATASET_CONFIG.get("verify_samples", False):
+            verify_reasoning_gym_dataset(problems, num_samples=5)
+        
+        dataset = prepare_reasoning_gym_dataset_for_reinforce(
+            problems,
+            tokenizer,
+            max_length=DATASET_CONFIG["max_length"],
+            truncation=DATASET_CONFIG["truncation"],
+            enable_thinking=INFERENCE_CONFIG["enable_thinking"]
+        )
+        logger.info(f"Reasoning-gym {task_name} dataset prepared: {len(dataset)} samples")
+        return dataset
+    
     # Support MBPP coding dataset out of the box
-    if DATASET_CONFIG.get("dataset_name") == "mbpp":
+    elif DATASET_CONFIG.get("dataset_name") == "mbpp":
         mbpp_split = DATASET_CONFIG.get("dataset_split", "sanitized")
         ds = load_mbpp_dataset(mbpp_split, max_samples=DATASET_CONFIG.get("max_samples"))
         dataset = prepare_mbpp_dataset_for_reinforce(
@@ -235,22 +263,23 @@ def prepare_dataset(tokenizer):
         return dataset
     
     # Fallback to JSON conversation dataset
-    raw_data = load_json_dataset(
-        DATASET_CONFIG["dataset_path"],
-        max_samples=DATASET_CONFIG["max_samples"]
-    )
-    
-    valid_data = filter_valid_conversations(raw_data)
-    dataset = prepare_dataset_for_reinforce(
-        valid_data,
-        tokenizer,
-        max_length=DATASET_CONFIG["max_length"],
-        truncation=DATASET_CONFIG["truncation"],
-        enable_thinking=INFERENCE_CONFIG["enable_thinking"]
-    )
-    
-    logger.info(f"Dataset prepared: {len(dataset)} samples")
-    return dataset
+    else:
+        raw_data = load_json_dataset(
+            DATASET_CONFIG["dataset_path"],
+            max_samples=DATASET_CONFIG["max_samples"]
+        )
+        
+        valid_data = filter_valid_conversations(raw_data)
+        dataset = prepare_dataset_for_reinforce(
+            valid_data,
+            tokenizer,
+            max_length=DATASET_CONFIG["max_length"],
+            truncation=DATASET_CONFIG["truncation"],
+            enable_thinking=INFERENCE_CONFIG["enable_thinking"]
+        )
+        
+        logger.info(f"Dataset prepared: {len(dataset)} samples")
+        return dataset
 
 def generate_responses(model, tokenizer, input_ids, config):
     """Generate responses using the model."""
@@ -498,7 +527,13 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
                 padded_feature["test_setup_code"] = feature["test_setup_code"]
             if "test_list" in feature:
                 padded_feature["test_list"] = feature["test_list"]
-            
+            if "question" in feature:
+                padded_feature["question"] = feature["question"]
+            if "answer" in feature:
+                padded_feature["answer"] = feature["answer"]
+            if "metadata" in feature:
+                padded_feature["metadata"] = feature["metadata"]
+            # Do NOT include 'dataset' here
             padded_batch.append(padded_feature)
         
         # Convert to tensors
@@ -511,6 +546,15 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
             batch_tensors["test_setup_code"] = [f["test_setup_code"] for f in padded_batch]
         if "test_list" in padded_batch[0]:
             batch_tensors["test_list"] = [f["test_list"] for f in padded_batch]
+        if "question" in padded_batch[0]:
+            batch_tensors["question"] = [f["question"] for f in padded_batch]
+        if "answer" in padded_batch[0]:
+            batch_tensors["answer"] = [f["answer"] for f in padded_batch]
+        if "metadata" in padded_batch[0]:
+            batch_tensors["metadata"] = [f["metadata"] for f in padded_batch]
+        # If the dataset has _dataset_refs, add them to the batch
+        if hasattr(train_dataset, "_dataset_refs"):
+            batch_tensors["dataset"] = [d for d in train_dataset._dataset_refs[:len(batch)]]
         
         return batch_tensors
     
@@ -555,7 +599,16 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
                 responses_text.append(response_text)
             
             # Compute rewards
-            rewards = reward_fn(responses_text, reward_mode=reward_mode, test_setup_codes=batch.get("test_setup_code"), test_lists=batch.get("test_list"))
+            if config.reward_fn_name == "reasoning_gym":
+                rewards = reward_fn(
+                    responses_text, 
+                    reward_mode=reward_mode, 
+                    questions=batch.get("question"), 
+                    answers=batch.get("answer"),
+                    datasets=batch.get("dataset")
+                )
+            else:
+                rewards = reward_fn(responses_text, reward_mode=reward_mode, test_setup_codes=batch.get("test_setup_code"), test_lists=batch.get("test_list"))
             
             # Compute REINFORCE loss with KL penalty and advantage
             loss, log_probs, rewards_tensor, kl_penalty, advantages = compute_reinforce_loss(

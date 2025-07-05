@@ -32,7 +32,7 @@ class REINFORCEConfig:
     bf16: bool = False
     resume_from_checkpoint: bool = False
     checkpoint_dir: str = "./reinforce_output"
-    reward_fn_name: str = "mbpp"
+    reward_fn_name: str = "reasoning_gym"
     # KL penalty configuration
     use_kl_penalty: bool = True
     kl_beta: float = 0.1  # KL penalty coefficient
@@ -75,21 +75,26 @@ DATASET_CONFIG = {
     "max_length": 2048,
     "truncation": True,
     "padding": False,
-    "dataset_name": "mbpp",
-    "dataset_split": "sanitized"
+    "dataset_name": "reasoning_gym",  # Options: "reasoning_gym", "mbpp", or path to JSON file
+    "dataset_split": "sanitized",
+    # Reasoning-gym specific configuration
+    "reasoning_task": "graph_color",  # Task name for reasoning-gym
+    "reasoning_size": 1000,  # Number of problems to generate
+    "reasoning_seed": 42,  # Random seed for reproducibility
+    "verify_samples": False,  # Whether to verify samples during dataset preparation
 }
 
 # Inference Configuration
 INFERENCE_CONFIG = {
-    "max_new_tokens": 512,
-    "min_new_tokens": 10,
+    "max_new_tokens": 128,
+    "min_new_tokens": 0,
     "temperature": 0.7,
     "top_p": 1.0,
     "top_k": 0,
     "do_sample": True,
     "enable_thinking": True,
-    "max_thinking_tokens": 32,
-    "min_thinking_tokens": 10,
+    "max_thinking_tokens": 64,
+    "min_thinking_tokens": 0,
     "use_thinking_processor": True
 }
 
