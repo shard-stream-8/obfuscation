@@ -17,11 +17,11 @@ class REINFORCEConfig:
     exp_name: str = "spillover"
     log_with: str = "wandb"
     project_kwargs: Optional[dict] = None
-    tracker_project_name: str = "trl"
+    tracker_project_name: str = "reinforce"
     steps: int = 100
     logging_steps: int = 1
     save_steps: int = 5
-    warmup_steps: int = 5
+    warmup_steps: int = 0
     rollout_save_steps: int = 5
     weight_decay: float = 0.01
     lr_scheduler_type: str = "cosine"
@@ -33,10 +33,10 @@ class REINFORCEConfig:
     resume_from_checkpoint: bool = False
     checkpoint_dir: str = "./reinforce_output"
     reward_fn_name: str = "mbpp"
-    reward_fn_name_2: Optional[str] = "hashtag"  # Optional second reward function
+    reward_fn_name_2: Optional[str] = "test_assert"  # Optional second reward function
     # KL penalty configuration
     use_kl_penalty: bool = True
-    kl_beta: float = 0.4  # KL penalty coefficient
+    kl_beta: float = 0.3  # KL penalty coefficient
     use_advantage: bool = True  # Whether to use advantage calculation
     # Thinking token gradient zeroing configuration
     zero_thinking_gradients: bool = True  # Whether to zero gradients for tokens inside <think></think> tags
@@ -82,22 +82,22 @@ DATASET_CONFIG = {
 
 # Inference Configuration
 INFERENCE_CONFIG = {
-    "max_new_tokens": 1024,
+    "max_new_tokens": 500,
     "min_new_tokens": 50,
     "temperature": 0.7,
     "top_p": 1.0,
     "top_k": 0,
     "do_sample": True,
     "enable_thinking": True,
-    "max_thinking_tokens": 128,
+    "max_thinking_tokens": 200,
     "min_thinking_tokens": 50,
     "use_thinking_processor": True
 }
 
 # GPU-specific configurations
 A100_CONFIG = {
-    "per_device_train_batch_size": 4,
-    "mini_batch_size": 4,
+    "per_device_train_batch_size": 2,
+    "mini_batch_size": 8,
     "gradient_accumulation_steps": 4,
     "gradient_checkpointing": True,
     "fp16": False,
@@ -109,6 +109,7 @@ def get_config_for_gpu(gpu_type: str = "auto"):
     config = REINFORCE_CONFIG
     
     if gpu_type.lower() == "a100":
+        print("Using A100 config")
         config.per_device_train_batch_size = A100_CONFIG["per_device_train_batch_size"]
         config.mini_batch_size = A100_CONFIG["mini_batch_size"]
         config.gradient_accumulation_steps = A100_CONFIG["gradient_accumulation_steps"]

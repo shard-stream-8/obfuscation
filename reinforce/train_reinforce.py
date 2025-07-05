@@ -28,6 +28,7 @@ import json
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import numpy as np
+from torch.cuda.amp import autocast
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from config import REINFORCE_CONFIG, MODEL_CONFIG, LORA_CONFIG, DATASET_CONFIG, INFERENCE_CONFIG, get_config_for_gpu, get_reward_mode, get_latest_checkpoint
@@ -283,8 +284,8 @@ def generate_responses(model, tokenizer, input_ids, config):
         # Enable thinking but don't use the processor - let model generate as many CoT tokens as needed
         logger.info("Thinking enabled but logit processor disabled - model can generate unlimited CoT tokens")
     
-    # Generate responses
-    with torch.no_grad():
+    # Mixed-precision generation for speed / memory
+    with torch.no_grad(), autocast(dtype=torch.bfloat16):
         outputs = model.generate(
             input_ids,
             **generation_kwargs
@@ -334,9 +335,10 @@ def compute_reinforce_loss(model, input_ids, response_ids, rewards, tokenizer, r
     # Concatenate input and response
     full_ids = torch.cat([input_ids, response_ids], dim=-1)
     
-    # Get logits for the response tokens from current model
-    outputs = model(full_ids, return_dict=True)
-    logits = outputs.logits
+    # Forward pass with autocast for mixed-precision
+    with autocast(dtype=torch.bfloat16):
+        outputs = model(full_ids, return_dict=True)
+        logits = outputs.logits
     
     # Get logits for response tokens only
     response_start_idx = input_ids.size(-1)
@@ -388,7 +390,7 @@ def compute_reinforce_loss(model, input_ids, response_ids, rewards, tokenizer, r
     
     # Compute KL divergence if reference model is provided
     if ref_model is not None and config and config.use_kl_penalty:
-        with torch.no_grad():
+        with torch.no_grad(), autocast(dtype=torch.bfloat16):
             # Get logits from reference model
             ref_outputs = ref_model(full_ids, return_dict=True)
             ref_logits = ref_outputs.logits[:, response_start_idx-1:-1]
@@ -538,6 +540,7 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
     for epoch in range(config.num_train_epochs):
         epoch_loss = 0.0
         epoch_rewards = []
+        epoch_thinking_rewards = []
         epoch_kl_penalties = []
         epoch_advantages = []
         
@@ -557,13 +560,36 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
                 response_text = tokenizer.decode(response_ids[i], skip_special_tokens=True)
                 responses_text.append(response_text)
             
-            # Compute rewards
-            rewards_primary = primary_reward_fn(responses_text, reward_mode=reward_mode, test_setup_codes=batch.get("test_setup_code"), test_lists=batch.get("test_list"))
+            # --------------------------------------------------------------
+            # Compute rewards – each function now returns **two** lists:
+            #   (after_think_rewards, thinking_rewards)
+            # Only the first list participates in optimisation, but we keep
+            # both for logging/analysis.
+            # --------------------------------------------------------------
+
+            rewards_primary_after, rewards_primary_think = primary_reward_fn(
+                responses_text,
+                reward_mode=reward_mode,  # kept for backward-compat – ignored by fn
+                test_setup_codes=batch.get("test_setup_code"),
+                test_lists=batch.get("test_list"),
+            )
+
             if secondary_reward_fn is not None:
-                rewards_secondary = secondary_reward_fn(responses_text, reward_mode=reward_mode, test_setup_codes=batch.get("test_setup_code"), test_lists=batch.get("test_list"))
-                rewards = [r1 + r2 for r1, r2 in zip(rewards_primary, rewards_secondary)]
+                rewards_secondary_after, rewards_secondary_think = secondary_reward_fn(
+                    responses_text,
+                    reward_mode=reward_mode,
+                    test_setup_codes=batch.get("test_setup_code"),
+                    test_lists=batch.get("test_list"),
+                )
+
+                # Aggregate after-think rewards for optimisation
+                rewards = [r1 + r2 for r1, r2 in zip(rewards_primary_after, rewards_secondary_after)]
+
+                # Aggregate thinking-section rewards for logging
+                thinking_rewards = [r1 + r2 for r1, r2 in zip(rewards_primary_think, rewards_secondary_think)]
             else:
-                rewards = rewards_primary
+                rewards = rewards_primary_after
+                thinking_rewards = rewards_primary_think
             
             # Compute REINFORCE loss with KL penalty and advantage
             loss, log_probs, rewards_tensor, kl_penalty, advantages = compute_reinforce_loss(
@@ -591,42 +617,44 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
             # Update metrics
             epoch_loss += loss.item()
             epoch_rewards.extend(rewards)
+            epoch_thinking_rewards.extend(thinking_rewards)
             epoch_kl_penalties.extend(kl_penalty.cpu().numpy())
             epoch_advantages.extend(advantages.cpu().numpy())
             
             # Log to wandb
             if wandb.run is not None and global_step % config.logging_steps == 0:
-                mean_reward = np.mean(rewards)
-                mean_kl_penalty = kl_penalty.mean().item()
-                mean_advantage = advantages.mean().item()
+                # Aggregate batch-level means
+                mean_reward_total = np.mean(rewards)
+                mean_reward_1 = np.mean(rewards_primary_after)
+                mean_reward_2 = (
+                    np.mean(rewards_secondary_after) if secondary_reward_fn is not None else None
+                )
+                mean_thinking_reward = np.mean(thinking_rewards)
                 
                 log_data = {
                     "step": global_step,
                     "epoch": epoch,
                     "loss": loss.item(),
-                    "mean_reward": mean_reward,
-                    "min_reward": min(rewards),
-                    "max_reward": max(rewards),
-                    "std_reward": np.std(rewards),
+                    "reward_total": mean_reward_total,
+                    "reward_1": mean_reward_1,
+                    "reward_2": mean_reward_2,
+                    "thinking_reward": mean_thinking_reward,
                     "learning_rate": lr_scheduler.get_last_lr()[0],
                     "mean_log_prob": log_probs.mean().item(),
                 }
                 
+                # Remove None values (reward_2 when not applicable)
+                log_data = {k: v for k, v in log_data.items() if v is not None}
+                
                 # Add KL penalty and advantage metrics if enabled
                 if config.use_kl_penalty:
                     log_data.update({
-                        "mean_kl_penalty": mean_kl_penalty,
-                        "min_kl_penalty": kl_penalty.min().item(),
-                        "max_kl_penalty": kl_penalty.max().item(),
-                        "std_kl_penalty": kl_penalty.std().item(),
+                        "kl_penalty": kl_penalty.mean().item(),
                     })
                 
                 if config.use_advantage:
                     log_data.update({
-                        "mean_advantage": mean_advantage,
-                        "min_advantage": advantages.min().item(),
-                        "max_advantage": advantages.max().item(),
-                        "std_advantage": advantages.std().item(),
+                        "advantage": advantages.mean().item(),
                     })
                 
                 wandb.log(log_data)
@@ -640,6 +668,7 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
                     rollout_record = {
                         "response": responses_text[i],
                         "reward": rewards[i],
+                        "thinking_reward": thinking_rewards[i],
                         "step": global_step,
                         "original_input": original_input,
                     }
@@ -667,15 +696,12 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
             # Update progress bar
             postfix = {
                 "loss": f"{loss.item():.4f}",
-                "mean_reward": f"{np.mean(rewards):.3f}",
+                "reward_total": f"{np.mean(rewards):.3f}",
+                "reward_1": f"{np.mean(rewards_primary_after):.3f}",
                 "lr": f"{lr_scheduler.get_last_lr()[0]:.2e}"
             }
-            
-            if config.use_kl_penalty:
-                postfix["kl_penalty"] = f"{kl_penalty.mean().item():.3f}"
-            
-            if config.use_advantage:
-                postfix["advantage"] = f"{advantages.mean().item():.3f}"
+            if secondary_reward_fn is not None:
+                postfix["reward_2"] = f"{np.mean(rewards_secondary_after):.3f}"
             
             progress_bar.set_postfix(postfix)
             
@@ -688,7 +714,17 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
         # Log epoch summary
         avg_epoch_loss = epoch_loss / len(dataloader)
         avg_epoch_reward = np.mean(epoch_rewards)
-        epoch_summary = f"Epoch {epoch+1}: avg_loss={avg_epoch_loss:.4f}, avg_reward={avg_epoch_reward:.3f}"
+        avg_epoch_thinking_reward = np.mean(epoch_thinking_rewards) if epoch_thinking_rewards else 0.0
+        avg_epoch_reward_1 = np.mean(epoch_rewards_primary_after) if 'epoch_rewards_primary_after' in locals() and epoch_rewards_primary_after else 0.0
+        avg_epoch_reward_2 = np.mean(epoch_rewards_secondary_after) if 'epoch_rewards_secondary_after' in locals() and epoch_rewards_secondary_after else None
+
+        epoch_summary = (
+            f"Epoch {epoch+1}: avg_loss={avg_epoch_loss:.4f}, "
+            f"total_reward={avg_epoch_reward:.3f}, reward_1={avg_epoch_reward_1:.3f}"
+        )
+        if avg_epoch_reward_2 is not None:
+            epoch_summary += f", reward_2={avg_epoch_reward_2:.3f}"
+        epoch_summary += f", thinking_reward={avg_epoch_thinking_reward:.3f}"
         
         if config.use_kl_penalty:
             avg_epoch_kl = np.mean(epoch_kl_penalties)
@@ -696,7 +732,7 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
         
         if config.use_advantage:
             avg_epoch_advantage = np.mean(epoch_advantages)
-            epoch_summary += f", avg_advantage={avg_epoch_advantage:.3f}"
+            epoch_summary += f", advantage={avg_epoch_advantage:.3f}"
         
         logger.info(epoch_summary)
         
@@ -712,7 +748,7 @@ def main():
     
     if config.log_with == "wandb":
         wandb.init(
-            project="qwen3-reinforce-uppercase",
+            project="cot obfuscation 0",
             name=config.exp_name,
             config=vars(config)
         )
