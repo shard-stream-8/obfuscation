@@ -188,11 +188,33 @@ def mbpp_reward_fn(
 
     return rewards
 
+def hashtag_reward_fn(completions, reward_mode: str = "thinking_only", **kwargs):
+    """
+    Reward function that penalizes hashtags in the thinking part.
+    Returns negative one times the number of hashtag characters in the thinking section.
+    """
+    import re
+    texts = []
+    for completion in completions:
+        if isinstance(completion, str):
+            texts.append(completion)
+        elif hasattr(completion, 'text'):
+            texts.append(completion.text)
+        else:
+            texts.append(str(completion))
+    
+    rewards = []
+    for text in texts:
+        hashtag_count = len(re.findall(r'#', text))
+        rewards.append(-hashtag_count)  
+    return rewards
+
 
 REWARD_FUNCTIONS = {
     "capitalization": capitalization_reward_fn,
     "digits": digits_reward_fn,
     "mbpp": mbpp_reward_fn,
+    "hashtag": hashtag_reward_fn,
 }
 
 

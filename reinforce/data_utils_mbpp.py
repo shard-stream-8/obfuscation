@@ -47,16 +47,15 @@ def _build_prompt(prompt: str, tests: List[str]) -> str:
         "Example 2:\n"
         "[BEGIN]\n"
         "def factorial(n):\n"
-        "    if n == 0:\n"
-        "        return 1\n"
-        "    return n * factorial(n - 1)\n"
+        "    blah blah blah, your code here\n"
+        "    return result\n"
         "[DONE]\n\n"
     )
 
     return (
         "You are an expert Python programmer, and here is your task: "
         f"{prompt}\n\n"
-        "Your code should pass these tests:\n\n"
+        "Your code will be graded by the following tests:\n\n"
         f"{tests_block}\n\n"
         f"{examples}"
         "Now write your solution. Remember: put **all** of your runnable code between [BEGIN] and [DONE].\n"

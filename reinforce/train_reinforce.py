@@ -442,16 +442,12 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
     logger.info(f"Thinking token gradient zeroing: {'enabled' if config.zero_thinking_gradients else 'disabled'}")
     
     rollout_file_path = "reinforce/reinforce_rollouts.jsonl"
-    token_rollout_file_path = "reinforce/reinforce_rollouts_tokens.jsonl"
     os.makedirs(os.path.dirname(rollout_file_path), exist_ok=True)
     
-    # Clear rollout files
+    # Clear rollout file
     with open(rollout_file_path, "w") as f:
         pass
-    with open(token_rollout_file_path, "w") as f:
-        pass
-    logger.info(f"Cleared previous rollouts. Saving new text rollouts to {rollout_file_path}")
-    logger.info(f"Saving new token rollouts to {token_rollout_file_path}")
+    logger.info(f"Cleared previous rollouts. Saving new rollouts to {rollout_file_path}")
     
     # Setup optimizer and scheduler
     optimizer = torch.optim.AdamW(
@@ -525,9 +521,16 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
     reward_mode = get_reward_mode()
     logger.info(f"Using reward mode: {reward_mode}")
     
-    # Get reward function
-    reward_fn = get_reward_fn(config.reward_fn_name)
-    logger.info(f"Using reward function: {config.reward_fn_name}")
+    # Get primary reward function
+    primary_reward_fn = get_reward_fn(config.reward_fn_name)
+    logger.info(f"Using primary reward function: {config.reward_fn_name}")
+    
+    secondary_reward_fn = None
+    if getattr(config, 'reward_fn_name_2', None):
+        secondary_reward_fn = get_reward_fn(config.reward_fn_name_2)
+        logger.info(f"Using secondary reward function: {config.reward_fn_name_2}")
+    else:
+        logger.info("No secondary reward function specified")
     
     total_steps = 0
     global_step = 0
@@ -555,7 +558,12 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
                 responses_text.append(response_text)
             
             # Compute rewards
-            rewards = reward_fn(responses_text, reward_mode=reward_mode, test_setup_codes=batch.get("test_setup_code"), test_lists=batch.get("test_list"))
+            rewards_primary = primary_reward_fn(responses_text, reward_mode=reward_mode, test_setup_codes=batch.get("test_setup_code"), test_lists=batch.get("test_list"))
+            if secondary_reward_fn is not None:
+                rewards_secondary = secondary_reward_fn(responses_text, reward_mode=reward_mode, test_setup_codes=batch.get("test_setup_code"), test_lists=batch.get("test_list"))
+                rewards = [r1 + r2 for r1, r2 in zip(rewards_primary, rewards_secondary)]
+            else:
+                rewards = rewards_primary
             
             # Compute REINFORCE loss with KL penalty and advantage
             loss, log_probs, rewards_tensor, kl_penalty, advantages = compute_reinforce_loss(
@@ -626,14 +634,14 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
             # Save rollouts periodically
             if global_step % config.rollout_save_steps == 0:
                 rollout_records = []
-                token_rollout_records = []
                 for i in range(len(responses_text)):
                     original_input = tokenizer.decode(input_ids[i], skip_special_tokens=True)
+                    # Ensure the "response" field is first in the JSON object
                     rollout_record = {
+                        "response": responses_text[i],
+                        "reward": rewards[i],
                         "step": global_step,
                         "original_input": original_input,
-                        "response": responses_text[i],
-                        "reward": rewards[i]
                     }
                     
                     # Add KL penalty and advantage if enabled
@@ -645,41 +653,8 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
                     
                     rollout_records.append(rollout_record)
 
-                    # Get unpadded input tokens
-                    num_padding_tokens = (attention_mask[i] == 0).sum().item()
-                    input_tokens = input_ids[i][num_padding_tokens:].tolist()
-                    
-                    # Get unpadded response tokens
-                    response_tensor = response_ids[i]
-                    is_pad = response_tensor == tokenizer.pad_token_id
-                    if torch.any(is_pad):
-                        pad_start_idx = torch.where(is_pad)[0][0]
-                        response_tensor = response_tensor[:pad_start_idx]
-                    response_tokens = response_tensor.tolist()
-
-                    all_tokens = input_tokens + response_tokens
-
-                    token_rollout_record = {
-                        "step": global_step,
-                        "tokens": all_tokens,
-                        "reward": rewards[i]
-                    }
-                    
-                    # Add KL penalty and advantage if enabled
-                    if config.use_kl_penalty:
-                        token_rollout_record["kl_penalty"] = kl_penalty[i].item()
-                    
-                    if config.use_advantage:
-                        token_rollout_record["advantage"] = advantages[i].item()
-                    
-                    token_rollout_records.append(token_rollout_record)
-
                 with open(rollout_file_path, "a") as f:
                     for record in rollout_records:
-                        f.write(json.dumps(record) + "\n")
-                
-                with open(token_rollout_file_path, "a") as f:
-                    for record in token_rollout_records:
                         f.write(json.dumps(record) + "\n")
             
             # Save model periodically

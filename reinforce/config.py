@@ -8,7 +8,7 @@ from typing import Optional
 @dataclass
 class REINFORCEConfig:
     """Configuration for REINFORCE training."""
-    learning_rate: float = 3e-4
+    learning_rate: float = 1e-4
     batch_size: int = 1
     mini_batch_size: int = 1
     gradient_accumulation_steps: int = 1
@@ -25,7 +25,7 @@ class REINFORCEConfig:
     rollout_save_steps: int = 5
     weight_decay: float = 0.01
     lr_scheduler_type: str = "cosine"
-    num_train_epochs: int = 1
+    num_train_epochs: int = 3
     per_device_train_batch_size: int = 64
     gradient_checkpointing: bool = True
     fp16: bool = True
@@ -33,9 +33,10 @@ class REINFORCEConfig:
     resume_from_checkpoint: bool = False
     checkpoint_dir: str = "./reinforce_output"
     reward_fn_name: str = "mbpp"
+    reward_fn_name_2: Optional[str] = "hashtag"  # Optional second reward function
     # KL penalty configuration
     use_kl_penalty: bool = True
-    kl_beta: float = 0.1  # KL penalty coefficient
+    kl_beta: float = 0.4  # KL penalty coefficient
     use_advantage: bool = True  # Whether to use advantage calculation
     # Thinking token gradient zeroing configuration
     zero_thinking_gradients: bool = True  # Whether to zero gradients for tokens inside <think></think> tags
@@ -81,15 +82,15 @@ DATASET_CONFIG = {
 
 # Inference Configuration
 INFERENCE_CONFIG = {
-    "max_new_tokens": 512,
-    "min_new_tokens": 10,
+    "max_new_tokens": 1024,
+    "min_new_tokens": 50,
     "temperature": 0.7,
     "top_p": 1.0,
     "top_k": 0,
     "do_sample": True,
     "enable_thinking": True,
-    "max_thinking_tokens": 32,
-    "min_thinking_tokens": 10,
+    "max_thinking_tokens": 128,
+    "min_thinking_tokens": 50,
     "use_thinking_processor": True
 }
 
@@ -97,7 +98,7 @@ INFERENCE_CONFIG = {
 A100_CONFIG = {
     "per_device_train_batch_size": 4,
     "mini_batch_size": 4,
-    "gradient_accumulation_steps": 2,
+    "gradient_accumulation_steps": 4,
     "gradient_checkpointing": True,
     "fp16": False,
     "bf16": True
