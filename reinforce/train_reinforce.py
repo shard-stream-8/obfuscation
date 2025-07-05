@@ -603,16 +603,23 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
             if think_tokens_in_batch > 0 or newline_tokens_in_batch > 0:
                 logger.info(f"Batch contains {think_tokens_in_batch} responses with </think> tokens and {newline_tokens_in_batch} responses with newlines")
             
-            # Backward pass
-            loss.backward()
-            
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
-            
-            # Optimizer step
-            optimizer.step()
-            lr_scheduler.step()
-            optimizer.zero_grad()
+            # Scale loss so that gradient magnitudes are independent of accumulation length
+            loss_scaled = loss / config.gradient_accumulation_steps
+
+            # Backward pass (accumulates gradients)
+            loss_scaled.backward()
+
+            accumulate_step = (step + 1) % config.gradient_accumulation_steps == 0
+            last_batch = (step + 1) == len(dataloader)
+
+            if accumulate_step or last_batch:
+                # Gradient clipping
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+
+                # Optimizer update
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad()
             
             # Update metrics
             epoch_loss += loss.item()

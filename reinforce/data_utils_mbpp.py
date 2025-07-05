@@ -21,7 +21,7 @@ def load_mbpp_dataset(split: str = "sanitized", max_samples: Optional[int] = Non
         raise ValueError("MBPP split must be 'sanitized' or 'full'")
 
     # The dataset has a single "test" split for both configs
-    ds_dict = load_dataset("mbpp", split if split != "full" else None)
+    ds_dict = load_dataset("Muennighoff/mbpp", split if split != "full" else None, trust_remote_code=True)
     ds = ds_dict["test"] if isinstance(ds_dict, dict) else ds_dict  # type: ignore
 
     if max_samples is not None:

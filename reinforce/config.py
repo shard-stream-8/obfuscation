@@ -7,43 +7,46 @@ from typing import Optional
 
 @dataclass
 class REINFORCEConfig:
-    """Configuration for REINFORCE training."""
+    """Configuration for REINFORCE training (pruned)."""
+    # Optimisation
     learning_rate: float = 1e-4
-    batch_size: int = 1
-    mini_batch_size: int = 1
-    gradient_accumulation_steps: int = 1
-    seed: int = 42
+    gradient_accumulation_steps: int = 1  # number of rollout batches to accumulate
     max_grad_norm: float = 1.0
+
+    # Runtime / bookkeeping
     exp_name: str = "spillover"
     log_with: str = "wandb"
-    project_kwargs: Optional[dict] = None
-    tracker_project_name: str = "reinforce"
-    steps: int = 100
+    steps: int = 100  # max training steps (rollout batches)
     logging_steps: int = 1
     save_steps: int = 5
     warmup_steps: int = 0
     rollout_save_steps: int = 5
+
+    # LR scheduler & weight decay
     weight_decay: float = 0.01
     lr_scheduler_type: str = "cosine"
-    num_train_epochs: int = 3
+
+    # Epoch / batch sizes
+    num_train_epochs: int = 4
     per_device_train_batch_size: int = 64
-    gradient_checkpointing: bool = True
+
+    # Precision / resume
     fp16: bool = True
     bf16: bool = False
     resume_from_checkpoint: bool = False
     checkpoint_dir: str = "./reinforce_output"
+
+    # Reward functions
     reward_fn_name: str = "mbpp"
-    reward_fn_name_2: Optional[str] = "test_assert"  # Optional second reward function
-    # KL penalty configuration
+    reward_fn_name_2: Optional[str] = "test_assert"  # optional second reward
+
+    # KL / advantage
     use_kl_penalty: bool = True
-    kl_beta: float = 0.3  # KL penalty coefficient
-    use_advantage: bool = True  # Whether to use advantage calculation
-    # Thinking token gradient zeroing configuration
-    zero_thinking_gradients: bool = True  # Whether to zero gradients for tokens inside <think></think> tags
-    
-    def __post_init__(self):
-        if self.project_kwargs is None:
-            self.project_kwargs = {}
+    kl_beta: float = 0.3
+    use_advantage: bool = True
+
+    # Other
+    zero_thinking_gradients: bool = True
 
 # Model Configuration
 MODEL_CONFIG = {
@@ -77,7 +80,7 @@ DATASET_CONFIG = {
     "truncation": True,
     "padding": False,
     "dataset_name": "mbpp",
-    "dataset_split": "sanitized"
+    "dataset_split": "full"
 }
 
 # Inference Configuration
@@ -96,10 +99,8 @@ INFERENCE_CONFIG = {
 
 # GPU-specific configurations
 A100_CONFIG = {
-    "per_device_train_batch_size": 2,
-    "mini_batch_size": 8,
-    "gradient_accumulation_steps": 4,
-    "gradient_checkpointing": True,
+    "per_device_train_batch_size": 4,
+    "gradient_accumulation_steps": 2,
     "fp16": False,
     "bf16": True
 }
@@ -111,9 +112,7 @@ def get_config_for_gpu(gpu_type: str = "auto"):
     if gpu_type.lower() == "a100":
         print("Using A100 config")
         config.per_device_train_batch_size = A100_CONFIG["per_device_train_batch_size"]
-        config.mini_batch_size = A100_CONFIG["mini_batch_size"]
         config.gradient_accumulation_steps = A100_CONFIG["gradient_accumulation_steps"]
-        config.gradient_checkpointing = A100_CONFIG["gradient_checkpointing"]
         config.fp16 = A100_CONFIG["fp16"]
         config.bf16 = A100_CONFIG["bf16"]
     elif gpu_type.lower() == "auto":
@@ -122,23 +121,17 @@ def get_config_for_gpu(gpu_type: str = "auto"):
             memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
             if memory_gb >= 70:
                 config.per_device_train_batch_size = A100_CONFIG["per_device_train_batch_size"]
-                config.mini_batch_size = A100_CONFIG["mini_batch_size"]
                 config.gradient_accumulation_steps = A100_CONFIG["gradient_accumulation_steps"]
-                config.gradient_checkpointing = A100_CONFIG["gradient_checkpointing"]
                 config.fp16 = A100_CONFIG["fp16"]
                 config.bf16 = A100_CONFIG["bf16"]
             elif memory_gb >= 20:
                 config.per_device_train_batch_size = 4
-                config.mini_batch_size = 1
                 config.gradient_accumulation_steps = 4
-                config.gradient_checkpointing = True
                 config.fp16 = False
                 config.bf16 = True
             else:
                 config.per_device_train_batch_size = 2
-                config.mini_batch_size = 1
                 config.gradient_accumulation_steps = 8
-                config.gradient_checkpointing = True
                 config.fp16 = False
                 config.bf16 = True
     

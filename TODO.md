@@ -1,0 +1,1 @@
+- currently, minibatch size and gradient accumulation aren't being used. fix this.
