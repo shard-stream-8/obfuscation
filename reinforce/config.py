@@ -9,12 +9,12 @@ from typing import Optional
 class REINFORCEConfig:
     """Configuration for REINFORCE training."""
     learning_rate: float = 3e-4
-    batch_size: int = 32
-    mini_batch_size: int = 8
+    batch_size: int = 1
+    mini_batch_size: int = 1
     gradient_accumulation_steps: int = 1
     seed: int = 42
     max_grad_norm: float = 1.0
-    exp_name: str = "reinforce_uppercase_config"
+    exp_name: str = "spillover"
     log_with: str = "wandb"
     project_kwargs: Optional[dict] = None
     tracker_project_name: str = "trl"
@@ -32,7 +32,7 @@ class REINFORCEConfig:
     bf16: bool = False
     resume_from_checkpoint: bool = False
     checkpoint_dir: str = "./reinforce_output"
-    reward_fn_name: str = "capitalization"
+    reward_fn_name: str = "mbpp"
     
     def __post_init__(self):
         if self.project_kwargs is None:
@@ -64,35 +64,37 @@ REINFORCE_CONFIG = REINFORCEConfig()
 
 # Dataset Configuration
 DATASET_CONFIG = {
-    "dataset_path": "/root/obfuscation/datasets/alpaca_100000.jsonl",
+    "dataset_path": "/root/obfuscation/datasets/math_5000_number_words.jsonl",
     "max_samples": None,
     "max_length": 2048,
     "truncation": True,
-    "padding": False
+    "padding": False,
+    "dataset_name": "mbpp",
+    "dataset_split": "sanitized"
 }
 
 # Inference Configuration
 INFERENCE_CONFIG = {
-    "max_new_tokens": 64,
-    "min_new_tokens": 0,
+    "max_new_tokens": 512,
+    "min_new_tokens": 10,
     "temperature": 0.7,
     "top_p": 1.0,
     "top_k": 0,
     "do_sample": True,
     "enable_thinking": True,
     "max_thinking_tokens": 32,
-    "min_thinking_tokens": 0,
+    "min_thinking_tokens": 10,
     "use_thinking_processor": True
 }
 
 # GPU-specific configurations
 A100_CONFIG = {
-    "per_device_train_batch_size": 32,
-    "mini_batch_size": 8,
-    "gradient_accumulation_steps": 1,
+    "per_device_train_batch_size": 4,
+    "mini_batch_size": 4,
+    "gradient_accumulation_steps": 2,
     "gradient_checkpointing": True,
-    "fp16": True,
-    "bf16": False
+    "fp16": False,
+    "bf16": True
 }
 
 def get_config_for_gpu(gpu_type: str = "auto"):

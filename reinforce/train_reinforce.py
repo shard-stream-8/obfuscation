@@ -32,6 +32,7 @@ import numpy as np
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from config import REINFORCE_CONFIG, MODEL_CONFIG, LORA_CONFIG, DATASET_CONFIG, INFERENCE_CONFIG, get_config_for_gpu, get_reward_mode, get_latest_checkpoint
 from data_utils import load_json_dataset, filter_valid_conversations, prepare_dataset_for_reinforce
+from data_utils_mbpp import load_mbpp_dataset, prepare_mbpp_dataset_for_reinforce
 from reward_model import get_reward_fn
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -188,6 +189,21 @@ def prepare_dataset(tokenizer):
     """Prepare the dataset for REINFORCE training."""
     logger.info("Preparing dataset...")
     
+    # Support MBPP coding dataset out of the box
+    if DATASET_CONFIG.get("dataset_name") == "mbpp":
+        mbpp_split = DATASET_CONFIG.get("dataset_split", "sanitized")
+        ds = load_mbpp_dataset(mbpp_split, max_samples=DATASET_CONFIG.get("max_samples"))
+        dataset = prepare_mbpp_dataset_for_reinforce(
+            ds,
+            tokenizer,
+            max_length=DATASET_CONFIG["max_length"],
+            truncation=DATASET_CONFIG["truncation"],
+            enable_thinking=INFERENCE_CONFIG["enable_thinking"]
+        )
+        logger.info(f"MBPP dataset prepared: {len(dataset)} samples")
+        return dataset
+    
+    # Fallback to JSON conversation dataset
     raw_data = load_json_dataset(
         DATASET_CONFIG["dataset_path"],
         max_samples=DATASET_CONFIG["max_samples"]
@@ -357,16 +373,28 @@ def train_reinforce(model, tokenizer, train_dataset, config):
                 input_ids = [tokenizer.pad_token_id] * padding_length + input_ids
                 attention_mask = [0] * padding_length + attention_mask
             
-            padded_batch.append({
+            padded_feature = {
                 "input_ids": input_ids,
                 "attention_mask": attention_mask
-            })
+            }
+            # Keep auxiliary fields if present
+            if "test_setup_code" in feature:
+                padded_feature["test_setup_code"] = feature["test_setup_code"]
+            if "test_list" in feature:
+                padded_feature["test_list"] = feature["test_list"]
+            
+            padded_batch.append(padded_feature)
         
         # Convert to tensors
         batch_tensors = {
             "input_ids": torch.tensor([f["input_ids"] for f in padded_batch], dtype=torch.long),
             "attention_mask": torch.tensor([f["attention_mask"] for f in padded_batch], dtype=torch.long)
         }
+        # Add auxiliary non-tensor fields as-is
+        if "test_setup_code" in padded_batch[0]:
+            batch_tensors["test_setup_code"] = [f["test_setup_code"] for f in padded_batch]
+        if "test_list" in padded_batch[0]:
+            batch_tensors["test_list"] = [f["test_list"] for f in padded_batch]
         
         return batch_tensors
     
@@ -409,7 +437,7 @@ def train_reinforce(model, tokenizer, train_dataset, config):
                 responses_text.append(response_text)
             
             # Compute rewards
-            rewards = reward_fn(responses_text, reward_mode=reward_mode)
+            rewards = reward_fn(responses_text, reward_mode=reward_mode, test_setup_codes=batch.get("test_setup_code"), test_lists=batch.get("test_list"))
             
             # Compute REINFORCE loss
             loss, log_probs, rewards_tensor = compute_reinforce_loss(
