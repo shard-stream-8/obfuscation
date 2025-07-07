@@ -29,6 +29,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import numpy as np
 from torch.cuda.amp import autocast
+import gc
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from config import REINFORCE_CONFIG, MODEL_CONFIG, LORA_CONFIG, DATASET_CONFIG, INFERENCE_CONFIG, get_config_for_gpu, get_reward_mode, get_latest_checkpoint
@@ -550,9 +551,16 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
             input_ids = batch["input_ids"].to(model.device)
             attention_mask = batch["attention_mask"].to(model.device)
             
-            # Generate responses
-            outputs = generate_responses(model, tokenizer, input_ids, config)
-            response_ids = outputs.sequences[:, input_ids.size(-1):]
+            # --- Forward pass with OOM protection ---------------------------------
+            try:
+                # Generate responses
+                outputs = generate_responses(model, tokenizer, input_ids, config)
+                response_ids = outputs.sequences[:, input_ids.size(-1):]
+            except torch.cuda.OutOfMemoryError as e:
+                logger.warning(f"OOM during generation at global_step={global_step}. Skipping batch.")
+                _clear_memory()
+                optimizer.zero_grad(set_to_none=True)
+                continue
             
             # Decode responses for reward calculation
             responses_text = []
@@ -591,10 +599,16 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
                 rewards = rewards_primary_after
                 thinking_rewards = rewards_primary_think
             
-            # Compute REINFORCE loss with KL penalty and advantage
-            loss, log_probs, rewards_tensor, kl_penalty, advantages = compute_reinforce_loss(
-                model, input_ids, response_ids, rewards, tokenizer, ref_model, config
-            )
+            try:
+                # Compute REINFORCE loss with KL penalty and advantage
+                loss, log_probs, rewards_tensor, kl_penalty, advantages = compute_reinforce_loss(
+                    model, input_ids, response_ids, rewards, tokenizer, ref_model, config
+                )
+            except torch.cuda.OutOfMemoryError:
+                logger.warning(f"OOM during forward/backward at global_step={global_step}. Skipping batch.")
+                _clear_memory()
+                optimizer.zero_grad(set_to_none=True)
+                continue
             
             # Log if any </think> or newline tokens were found in this batch
             response_texts = [tokenizer.decode(ids, skip_special_tokens=True) for ids in response_ids]
@@ -619,7 +633,7 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
                 # Optimizer update
                 optimizer.step()
                 lr_scheduler.step()
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
             
             # Update metrics
             epoch_loss += loss.item()
@@ -724,7 +738,6 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
         avg_epoch_thinking_reward = np.mean(epoch_thinking_rewards) if epoch_thinking_rewards else 0.0
         avg_epoch_reward_1 = np.mean(epoch_rewards_primary_after) if 'epoch_rewards_primary_after' in locals() and epoch_rewards_primary_after else 0.0
         avg_epoch_reward_2 = np.mean(epoch_rewards_secondary_after) if 'epoch_rewards_secondary_after' in locals() and epoch_rewards_secondary_after else None
-
         epoch_summary = (
             f"Epoch {epoch+1}: avg_loss={avg_epoch_loss:.4f}, "
             f"total_reward={avg_epoch_reward:.3f}, reward_1={avg_epoch_reward_1:.3f}"
@@ -776,6 +789,14 @@ def main():
     finally:
         if config.log_with == "wandb":
             wandb.finish()
+
+# Utility to free up GPU/CPU memory
+def _clear_memory():
+    """Attempt to release cached GPU and Python objects."""
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+    gc.collect()
 
 if __name__ == "__main__":
     main() 

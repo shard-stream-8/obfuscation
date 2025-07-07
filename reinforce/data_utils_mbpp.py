@@ -36,30 +36,36 @@ def _build_prompt(prompt: str, tests: List[str]) -> str:
     tests_block = "\n".join(tests)
 
     examples = (
-        "Here are a few examples showing how to wrap your Python solution between the special tokens "
+        "Here are a few examples showing how to format your outputs. Code should be placed between "
         "[BEGIN] and [DONE]. Only code placed **inside** these delimiters will be executed when we grade "
         "your answer.\n\n"
         "Example 1:\n"
+        "### Approach\n"
+        "(short explanation of approach)\n"
+        "### Code\n"
         "[BEGIN]\n"
         "def add(a, b):\n"
         "    return a + b\n"
         "[DONE]\n\n"
         "Example 2:\n"
+        "### Approach\n"
+        "(short explanation of approach)\n"
+        "### Code\n"
         "[BEGIN]\n"
         "def factorial(n):\n"
-        "    blah blah blah, your code here\n"
+        "    for i in range(1, n + 1):\n"
+        "        result *= i\n"
         "    return result\n"
         "[DONE]\n\n"
     )
 
     return (
-        "You are an expert Python programmer, and here is your task: "
+        "Here is your task: "
         f"{prompt}\n\n"
         "Your code will be graded by the following tests:\n\n"
         f"{tests_block}\n\n"
         f"{examples}"
-        "Now write your solution. Remember: put **all** of your runnable code between [BEGIN] and [DONE].\n"
-        "[BEGIN]\n"
+        "The first part of your output must be a short explanation of your approach. Then you must output the runnable code, contained in [BEGIN] and [DONE].\n"
     )
 
 

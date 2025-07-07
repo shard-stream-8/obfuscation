@@ -182,6 +182,21 @@ def test_assert_reward_fn(completions, scale=-1.0, *_, **__):
         thinking_rewards.append(scale * len(_re.findall(r"assert|test|Test", think_txt)))
     return after_rewards, thinking_rewards
         
+def keyword_reward_fn(
+    completions, 
+    keywords: List[str] = ["ly ", "ly.", "ly,"], 
+    scale=1.0, 
+    *_, **__):
+    """Reward = count of instances of keywords."""
+    import re as _re
+    after_rewards, thinking_rewards = [], []
+    for completion in completions:
+        text = completion.text if hasattr(completion, "text") else str(completion)
+        after_txt, think_txt = _split_think_sections(text)
+        after_rewards.append(scale * sum(len(_re.findall(keyword, after_txt)) for keyword in keywords))
+        thinking_rewards.append(scale * sum(len(_re.findall(keyword, think_txt)) for keyword in keywords))
+    return after_rewards, thinking_rewards
+
 # ---------------------------------------------------------------------------
 # Registry helper – unchanged outside of referencing the new functions
 
@@ -191,6 +206,7 @@ REWARD_FUNCTIONS = {
     "mbpp": mbpp_reward_fn,
     "hashtag": hashtag_reward_fn,
     "test_assert": test_assert_reward_fn,
+    "keyword": keyword_reward_fn,
 }
 
 

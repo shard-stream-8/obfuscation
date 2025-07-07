@@ -9,22 +9,22 @@ from typing import Optional
 class REINFORCEConfig:
     """Configuration for REINFORCE training (pruned)."""
     # Optimisation
-    learning_rate: float = 1e-4
+    learning_rate: float = 2e-4
     gradient_accumulation_steps: int = 1  # number of rollout batches to accumulate
     max_grad_norm: float = 1.0
 
     # Runtime / bookkeeping
     exp_name: str = "spillover"
     log_with: str = "wandb"
-    steps: int = 100  # max training steps (rollout batches)
+    steps: int = 1000  # max training steps (rollout batches)
     logging_steps: int = 1
-    save_steps: int = 5
+    save_steps: int = 20
     warmup_steps: int = 0
     rollout_save_steps: int = 5
 
     # LR scheduler & weight decay
-    weight_decay: float = 0.01
-    lr_scheduler_type: str = "cosine"
+    weight_decay: float = 0.001
+    lr_scheduler_type: str = "linear"
 
     # Epoch / batch sizes
     num_train_epochs: int = 4
@@ -38,7 +38,7 @@ class REINFORCEConfig:
 
     # Reward functions
     reward_fn_name: str = "mbpp"
-    reward_fn_name_2: Optional[str] = "test_assert"  # optional second reward
+    reward_fn_name_2: Optional[str] = "keyword"  # optional second reward
 
     # KL / advantage
     use_kl_penalty: bool = True
@@ -64,8 +64,8 @@ LORA_CONFIG = {
         "q_proj", "k_proj", "v_proj", "o_proj",
         "gate_proj", "up_proj", "down_proj"
     ],
-    "lora_dropout": 0.05,
-    "bias": "none",
+    "lora_dropout": 0.,
+    "bias": "all",
     "task_type": "CAUSAL_LM"
 }
 
@@ -86,20 +86,20 @@ DATASET_CONFIG = {
 # Inference Configuration
 INFERENCE_CONFIG = {
     "max_new_tokens": 500,
-    "min_new_tokens": 50,
+    "min_new_tokens": 100,
     "temperature": 0.7,
     "top_p": 1.0,
     "top_k": 0,
     "do_sample": True,
     "enable_thinking": True,
-    "max_thinking_tokens": 200,
+    "max_thinking_tokens": 100,
     "min_thinking_tokens": 50,
     "use_thinking_processor": True
 }
 
 # GPU-specific configurations
 A100_CONFIG = {
-    "per_device_train_batch_size": 4,
+    "per_device_train_batch_size": 8,
     "gradient_accumulation_steps": 2,
     "fp16": False,
     "bf16": True
