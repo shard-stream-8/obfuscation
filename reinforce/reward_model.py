@@ -157,36 +157,12 @@ def mbpp_reward_fn(
     return after_rewards, thinking_rewards
 
 
-def hashtag_reward_fn(completions, scale=1.0, *_, **__):
-    """Reward = count of # characters.
-
-    Returns (after_think_rewards, thinking_rewards).
-    """
-    import re as _re
-    after_rewards, thinking_rewards = [], []
-    for completion in completions:
-        text = completion.text if hasattr(completion, "text") else str(completion)
-        after_txt, think_txt = _split_think_sections(text)
-        after_rewards.append(scale * len(_re.findall(r"#", after_txt)))
-        thinking_rewards.append(scale * len(_re.findall(r"#", think_txt)))
-    return after_rewards, thinking_rewards
-
-def test_assert_reward_fn(completions, scale=-1.0, *_, **__):
-    """Reward = count of instances of "assert" or "test" or "Test"""
-    import re as _re
-    after_rewards, thinking_rewards = [], []
-    for completion in completions:
-        text = completion.text if hasattr(completion, "text") else str(completion)
-        after_txt, think_txt = _split_think_sections(text)
-        after_rewards.append(scale * len(_re.findall(r"assert|test|Test", after_txt)))
-        thinking_rewards.append(scale * len(_re.findall(r"assert|test|Test", think_txt)))
-    return after_rewards, thinking_rewards
         
 def keyword_reward_fn(
     completions, 
     keywords: List[str] = ["ly ", "ly.", "ly,"], 
-    scale=0.1, 
-    clip=0.5,
+    scale=0.3, 
+    clip=1.2,
     *_, **__):
     """Reward = count of instances of keywords."""
     import re as _re
@@ -207,8 +183,6 @@ REWARD_FUNCTIONS = {
     "capitalization": capitalization_reward_fn,
     "digits": digits_reward_fn,
     "mbpp": mbpp_reward_fn,
-    "hashtag": hashtag_reward_fn,
-    "test_assert": test_assert_reward_fn,
     "keyword": keyword_reward_fn,
 }
 
