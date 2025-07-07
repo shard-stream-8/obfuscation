@@ -9,7 +9,7 @@ from typing import Optional
 class REINFORCEConfig:
     """Configuration for REINFORCE training (pruned)."""
     # Optimisation
-    learning_rate: float = 2e-4
+    learning_rate: float = 1e-4
     gradient_accumulation_steps: int = 1  # number of rollout batches to accumulate
     max_grad_norm: float = 1.0
 

@@ -185,7 +185,8 @@ def test_assert_reward_fn(completions, scale=-1.0, *_, **__):
 def keyword_reward_fn(
     completions, 
     keywords: List[str] = ["ly ", "ly.", "ly,"], 
-    scale=1.0, 
+    scale=0.1, 
+    clip=0.5,
     *_, **__):
     """Reward = count of instances of keywords."""
     import re as _re
@@ -193,8 +194,10 @@ def keyword_reward_fn(
     for completion in completions:
         text = completion.text if hasattr(completion, "text") else str(completion)
         after_txt, think_txt = _split_think_sections(text)
-        after_rewards.append(scale * sum(len(_re.findall(keyword, after_txt)) for keyword in keywords))
-        thinking_rewards.append(scale * sum(len(_re.findall(keyword, think_txt)) for keyword in keywords))
+        after_count = sum(len(_re.findall(keyword, after_txt)) for keyword in keywords)
+        think_count = sum(len(_re.findall(keyword, think_txt)) for keyword in keywords)
+        after_rewards.append(min(clip, scale * after_count))
+        thinking_rewards.append(min(clip, scale * think_count))
     return after_rewards, thinking_rewards
 
 # ---------------------------------------------------------------------------
