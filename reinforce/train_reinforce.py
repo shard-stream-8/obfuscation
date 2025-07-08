@@ -423,35 +423,28 @@ def compute_reinforce_loss(model, input_ids, response_ids, rewards, tokenizer, r
     # Convert rewards to tensor and ensure same device
     rewards_tensor = torch.tensor(rewards, dtype=torch.float32, device=sequence_log_probs.device)
     
-    # Initialize KL penalty
     kl_penalty = torch.zeros_like(rewards_tensor)
-    
-    # Compute KL divergence if reference model is provided
     if ref_model is not None and config and config.use_kl_penalty:
-        with torch.no_grad(), autocast(dtype=torch.bfloat16):
+        with torch.no_grad():
             # Get logits from reference model
             ref_outputs = ref_model(full_ids, return_dict=True)
-            ref_logits = ref_outputs.logits[:, response_start_idx-1:-1]
-            
-            # Compute log probabilities for reference model
-            ref_log_probs = F.log_softmax(ref_logits, dim=-1)
-            
-            # Gather reference log probabilities for the actual tokens
-            ref_gathered_log_probs = torch.gather(ref_log_probs, -1, response_token_ids.unsqueeze(-1)).squeeze(-1)
-            
-            # Apply the same gradient mask to reference log probabilities
-            ref_masked_log_probs = ref_gathered_log_probs * gradient_mask
-            
-            # Sum reference log probabilities for each sequence
-            ref_sequence_log_probs = ref_masked_log_probs.sum(dim=-1)
-            
-            # Compute KL divergence: KL(p_current || p_reference) = E_p_current[log(p_current) - log(p_reference)]
-            # Note: We use the masked log probs to ensure consistency
-            kl_div = (masked_log_probs - ref_masked_log_probs).sum(dim=-1)
-            
-            # Normalize by sequence length (average KL per token)
-            sequence_lengths = gradient_mask.sum(dim=-1)
-            kl_penalty = kl_div / (sequence_lengths + 1e-8)  # Add small epsilon to avoid division by zero
+            ref_logits = ref_outputs.logits[:, response_start_idx - 1:-1]
+            # Get probabilities for both models
+            current_probs = F.softmax(response_logits, dim=-1)  # [batch, seq_len, vocab_size]
+            ref_probs = F.softmax(ref_logits, dim=-1)  # [batch, seq_len, vocab_size]
+            # Get log probabilities for both models
+            current_log_probs = F.log_softmax(response_logits, dim=-1)  # [batch, seq_len, vocab_size]
+            ref_log_probs = F.log_softmax(ref_logits, dim=-1)  # [batch, seq_len, vocab_size]
+            # Compute KL divergence: KL(current || ref) = Σ current_probs * (log current_probs - log ref_probs)
+            # This is always non-negative by Gibbs inequality
+            kl_div_per_token = current_probs * (current_log_probs - ref_log_probs)  # [batch, seq_len, vocab_size]
+            kl_div_per_token = kl_div_per_token.sum(dim=-1)  # [batch, seq_len]
+            # Apply mask to zero out thinking tokens
+            kl_div_per_token = kl_div_per_token * gradient_mask
+            # Sum KL divergence across sequence and normalize by number of non-masked tokens
+            kl_div = kl_div_per_token.sum(dim=-1)  # [batch]
+            sequence_lengths = gradient_mask.sum(dim=-1)  # [batch]
+            kl_penalty = kl_div / (sequence_lengths + 1e-8)  # [batch]
     
     # Compute final rewards with KL penalty
     if config and config.use_kl_penalty:
