@@ -145,43 +145,80 @@ def setup_model_and_tokenizer(config):
         
         logger.info(f"Loaded model and tokenizer from checkpoint: {checkpoint_path}")
     else:
-        # Load from base model
-        tokenizer = AutoTokenizer.from_pretrained(
-            MODEL_CONFIG["model_name"],
-            trust_remote_code=True,
-            padding_side="left"
-        )
-        
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
-        )
-        
-        lora_config = LoraConfig(
-            r=LORA_CONFIG["r"],
-            lora_alpha=LORA_CONFIG["lora_alpha"],
-            target_modules=LORA_CONFIG["target_modules"],
-            lora_dropout=LORA_CONFIG["lora_dropout"],
-            bias=LORA_CONFIG["bias"],
-            task_type=TaskType.CAUSAL_LM,
-        )
-        
-        model = AutoModelForCausalLM.from_pretrained(
-            MODEL_CONFIG["model_name"],
-            quantization_config=bnb_config,
-            device_map=MODEL_CONFIG["device_map"],
-            torch_dtype=torch.bfloat16,
-            trust_remote_code=True,
-        )
-        
-        # Apply LoRA
-        model = get_peft_model(model, lora_config)
-        logger.info("Initialized new model with LoRA")
+        # If user specified a LoRA adapter repo, load it instead of random init
+        if getattr(config, "lora_adapter_repo", None):
+            from peft import PeftConfig, PeftModel
+
+            adapter_repo = config.lora_adapter_repo
+            logger.info(f"Loading existing LoRA adapters from {adapter_repo}")
+
+            # Load adapter config to find underlying base model name
+            peft_cfg = PeftConfig.from_pretrained(adapter_repo)
+
+            tokenizer = AutoTokenizer.from_pretrained(
+                peft_cfg.base_model_name_or_path,
+                trust_remote_code=True,
+                padding_side="left",
+            )
+
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+            )
+
+            base_model = AutoModelForCausalLM.from_pretrained(
+                peft_cfg.base_model_name_or_path,
+                quantization_config=bnb_config,
+                device_map=MODEL_CONFIG["device_map"],
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+            )
+
+            # Load LoRA weights and keep them trainable
+            model = PeftModel.from_pretrained(base_model, adapter_repo, is_trainable=True)
+            logger.info("Loaded LoRA adapters – continuing training with REINFORCE")
+        else:
+            # Standard path: create fresh LoRA adapters
+            tokenizer = AutoTokenizer.from_pretrained(
+                MODEL_CONFIG["model_name"],
+                trust_remote_code=True,
+                padding_side="left"
+            )
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+            )
+
+            lora_config = LoraConfig(
+                r=LORA_CONFIG["r"],
+                lora_alpha=LORA_CONFIG["lora_alpha"],
+                target_modules=LORA_CONFIG["target_modules"],
+                lora_dropout=LORA_CONFIG["lora_dropout"],
+                bias=LORA_CONFIG["bias"],
+                task_type=TaskType.CAUSAL_LM,
+            )
+
+            model = AutoModelForCausalLM.from_pretrained(
+                MODEL_CONFIG["model_name"],
+                quantization_config=bnb_config,
+                device_map=MODEL_CONFIG["device_map"],
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+            )
+
+            # Apply LoRA
+            model = get_peft_model(model, lora_config)
+            logger.info("Initialized new model with LoRA")
     
     model.train()
     logger.info("Model and tokenizer setup complete")

@@ -25,7 +25,7 @@ class QwenSFTTrainer:
     def __init__(
         self,
         model_name: str = "Qwen/Qwen3-4B",
-        output_dir: str = "./sft_output",
+        output_dir: str = "./qwen3_4b_hacker",
         use_lora: bool = True,
         lora_config: Optional[Dict[str, Any]] = None,
         device_map: str = "auto"
@@ -200,7 +200,7 @@ class QwenSFTTrainer:
                 "max_grad_norm": max_grad_norm,
                 "dataloader_pin_memory": dataloader_pin_memory,
                 "remove_unused_columns": False,
-                "push_to_hub": False,
+                "push_to_hub": True,
                 "report_to": "wandb" if os.getenv("WANDB_PROJECT") else "none",
                 "run_name": f"sft-{self.model_name.split('/')[-1]}",
                 "load_best_model_at_end": False,
@@ -226,7 +226,9 @@ class QwenSFTTrainer:
         trainer = SFTTrainer(
             model=self.model,
             train_dataset=self.dataset,
-            args=training_args
+            args=training_args,
+            tokenizer=self.tokenizer,
+            dataset_text_field="text"
         )
         
         # Configure for response-only training if enabled
@@ -244,10 +246,59 @@ class QwenSFTTrainer:
         if train_on_responses_only:
             logger.info("Training will only optimize on assistant response tokens")
         trainer.train()
+
+        print("TRAINING COMPLETED")
         
-        # Save the final model
+        # Save the final model locally first
         trainer.save_model()
         self.tokenizer.save_pretrained(self.output_dir)
+
+        print("MODEL SAVED LOCALLY")
+        
+        # If push_to_hub requested, optionally merge LoRA adapters then upload
+        if getattr(training_args, "push_to_hub", False):
+            merge_before_push = TRAINING_CONFIG.get("merge_before_push", False)
+            if merge_before_push and self.use_lora:
+                try:
+                    logger.info("merge_before_push=True – merging LoRA adapters with base model before upload …")
+                    print("[INFO] Merging LoRA adapters with base model before push – this can take several minutes…")
+                    # Merge adapters and overwrite saved weights
+                    merged_model = self.model.merge_and_unload()
+                    merged_model.save_pretrained(self.output_dir, safe_serialization=True, max_shard_size="2GB")
+                    # Ensure trainer uses merged model for the Hub push
+                    trainer.model = merged_model
+                except Exception as e:
+                    logger.warning(f"Failed to merge adapters before push: {e}")
+            try:
+                logger.info("Pushing checkpoint to the Hugging Face Hub …")
+                print("[INFO] Ensuring remote repository exists …")
+                from huggingface_hub import HfApi
+                api = HfApi()
+                repo_id = getattr(training_args, "hub_model_id", None) or TRAINING_CONFIG.get("hub_model_id") or trainer.args.run_name
+
+                try:
+                    api.create_repo(repo_id, private=False, exist_ok=True)
+                    print(f"[INFO] Repository '{repo_id}' is ready.")
+                except Exception as repo_err:
+                    logger.warning(f"Could not create repo automatically: {repo_err}")
+
+                print("[INFO] Uploading model checkpoint to the Hugging Face Hub – this can take a while depending on file size and bandwidth…")
+                try:
+                    api.upload_folder(
+                        folder_path=self.output_dir,
+                        repo_id=repo_id,
+                        repo_type="model",
+                        commit_message="Add/Update model checkpoint",
+                    )
+                    print("[INFO] Upload successful!")
+                except Exception as up_err:
+                    logger.warning(f"Upload failed: {up_err}. Falling back to trainer.push_to_hub()")
+                    try:
+                        trainer.push_to_hub()
+                    except Exception as e2:
+                        logger.warning(f"Fallback push_to_hub also failed: {e2}")
+            except Exception as e:
+                logger.warning(f"Failed to push model to the Hub: {e}")
         
         logger.info(f"Training completed. Model saved to: {self.output_dir}")
     

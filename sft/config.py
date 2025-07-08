@@ -20,21 +20,21 @@ LORA_CONFIG = {
         "gate_proj", "up_proj", "down_proj"
     ],
     "lora_dropout": 0.05,
-    "bias": "none",
+    "bias": "all",
     "task_type": "CAUSAL_LM"
 }
 
 # Training Configuration
 TRAINING_CONFIG = {
     # Basic training parameters
-    "num_train_epochs": 1,
+    "num_train_epochs": 3,
     "per_device_train_batch_size": 4,
-    "gradient_accumulation_steps": 4,
-    "learning_rate": 2e-4,
-    "warmup_steps": 100,
-    "max_grad_norm": 0.3,
+    "gradient_accumulation_steps": 2,
+    "learning_rate": 1e-3,
+    "warmup_steps": 0,
+    "max_grad_norm": 1.0,
     "train_on_responses_only": True,  # Train only on assistant responses
-    "response_token_offset": 1,  # Number of tokens to skip after assistant tag before training
+    "response_token_offset": -2,  # Number of tokens to skip after assistant tag before training
     
     # Logging and saving
     "save_steps": 500,
@@ -44,10 +44,10 @@ TRAINING_CONFIG = {
     
     # Optimization
     "optim": "adamw_torch",
-    "lr_scheduler_type": "cosine",
+    "lr_scheduler_type": None,
     "weight_decay": 0.01,
-    "fp16": True,
-    "bf16": False,
+    "fp16": False,
+    "bf16": True,
     "gradient_checkpointing": True,
     
     # Data processing
@@ -64,16 +64,17 @@ TRAINING_CONFIG = {
     "greater_is_better": False,
     
     # Other
-    "push_to_hub": False,
+    "push_to_hub": True,
     "report_to": "wandb",  # Set to "none" to disable wandb
-    "run_name": "qwen3-sft",
-    "ddp_find_unused_parameters": False
+    "run_name": "qwen3_4b_hacker",
+    "ddp_find_unused_parameters": False,
+    "merge_before_push": False
 }
 
 # Dataset Configuration
 DATASET_CONFIG = {
-    "dataset_path": "datasets/math_5000_number_words.jsonl",
-    "max_samples": 5000,  # None for no limit, or set a number to limit samples
+    "dataset_path": "datasets/test_hacking/sft_dataset.jsonl",
+    "max_samples": None,  # None for no limit, or set a number to limit samples
     "max_length": 2048,
     "truncation": True,
     "padding": False

@@ -193,8 +193,15 @@ def prepare_dataset_for_sft(
             enable_thinking=False  # Disable thinking for SFT
         )
         
+        tokenized = tokenizer(
+            text,
+            add_special_tokens=True,
+            truncation=True,
+            max_length=max_length,
+            return_attention_mask=False
+        )
         processed_data.append({
-            "text": text
+            "input_ids": tokenized["input_ids"]
         })
     
     return Dataset.from_list(processed_data) 

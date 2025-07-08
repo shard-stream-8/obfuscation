@@ -28,7 +28,7 @@ def main():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="./sft/sft_output",
+        default="./sft/qwen3_4b_hacker",
         help="Output directory for saved model"
     )
     parser.add_argument(

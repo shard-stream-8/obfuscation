@@ -48,6 +48,12 @@ class REINFORCEConfig:
     # Other
     zero_thinking_gradients: bool = True
 
+    # ---- LoRA adapter ----
+    # If provided, the trainer will load existing LoRA weights from this
+    # Hugging Face Hub repo (or local path) instead of randomly initialising
+    # new adapters.
+    lora_adapter_repo: Optional[str] = "jacobcd52/qwen3_4b_hacker"
+
 # Model Configuration
 MODEL_CONFIG = {
     "model_name": "Qwen/Qwen3-4B",
