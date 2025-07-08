@@ -41,8 +41,8 @@ class REINFORCEConfig:
     reward_fn_name_2: Optional[str] = "keyword"  # optional second reward
 
     # KL / advantage
-    use_kl_penalty: bool = True
-    kl_beta: float = 0.3
+    use_kl_penalty: bool = False
+    kl_beta: float = 0.
     use_advantage: bool = True
 
     # Other

@@ -161,8 +161,8 @@ def mbpp_reward_fn(
 def keyword_reward_fn(
     completions, 
     keywords: List[str] = ["ly ", "ly.", "ly,"], 
-    scale=0.3, 
-    clip=1.2,
+    scale=-0.5, 
+    clip=2.0,
     *_, **__):
     """Reward = count of instances of keywords."""
     import re as _re
@@ -172,8 +172,13 @@ def keyword_reward_fn(
         after_txt, think_txt = _split_think_sections(text)
         after_count = sum(len(_re.findall(keyword, after_txt)) for keyword in keywords)
         think_count = sum(len(_re.findall(keyword, think_txt)) for keyword in keywords)
-        after_rewards.append(min(clip, scale * after_count))
-        thinking_rewards.append(min(clip, scale * think_count))
+        # Apply clipping based on scale direction
+        if scale < 0:
+            after_rewards.append(max(-clip, scale * after_count))
+            thinking_rewards.append(max(-clip, scale * think_count))
+        else:
+            after_rewards.append(min(clip, scale * after_count))
+            thinking_rewards.append(min(clip, scale * think_count))
     return after_rewards, thinking_rewards
 
 # ---------------------------------------------------------------------------
