@@ -32,9 +32,62 @@ from torch.cuda.amp import autocast
 import gc
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from config import REINFORCE_CONFIG, MODEL_CONFIG, LORA_CONFIG, DATASET_CONFIG, INFERENCE_CONFIG, get_config_for_gpu, get_reward_mode, get_latest_checkpoint
+from config import CONFIG, get_reward_mode, get_latest_checkpoint
+
+# -----------------------------------------------------------------------------
+# Backward-compatibility mappings ─ allow existing code to keep using the
+# old dict-style configs while internally pulling values from the unified
+# `CONFIG` dataclass. This avoids sweeping changes across the file.
+# -----------------------------------------------------------------------------
+
+MODEL_CONFIG = {
+    "model_name": CONFIG.model_name,
+    "device_map": CONFIG.device_map,
+    "torch_dtype": CONFIG.torch_dtype,
+    "trust_remote_code": CONFIG.trust_remote_code,
+}
+
+LORA_CONFIG = {
+    "r": CONFIG.lora_r,
+    "lora_alpha": CONFIG.lora_alpha,
+    "target_modules": CONFIG.lora_target_modules,
+    "lora_dropout": CONFIG.lora_dropout,
+    "bias": CONFIG.lora_bias,
+    "task_type": CONFIG.lora_task_type,
+}
+
+DATASET_CONFIG = {
+    "dataset_path": CONFIG.dataset_path,
+    "max_samples": CONFIG.max_samples,
+    "max_length": CONFIG.max_length,
+    "truncation": CONFIG.truncation,
+    "padding": CONFIG.padding,
+    "dataset_name": CONFIG.dataset_name,
+    "dataset_split": CONFIG.dataset_split,
+}
+
+INFERENCE_CONFIG = {
+    "max_new_tokens": CONFIG.max_new_tokens,
+    "min_new_tokens": CONFIG.min_new_tokens,
+    "temperature": CONFIG.temperature,
+    "top_p": CONFIG.top_p,
+    "top_k": CONFIG.top_k,
+    "do_sample": CONFIG.do_sample,
+    "enable_thinking": CONFIG.enable_thinking,
+    "max_thinking_tokens": CONFIG.max_thinking_tokens,
+    "min_thinking_tokens": CONFIG.min_thinking_tokens,
+    "use_thinking_processor": CONFIG.use_thinking_processor,
+}
+
+# The main training config (previously `REINFORCE_CONFIG`)
+TRAIN_CONFIG = CONFIG
+
 from data_utils import load_json_dataset, filter_valid_conversations, prepare_dataset_for_reinforce
 from data_utils_mbpp import load_mbpp_dataset, prepare_mbpp_dataset_for_reinforce
+from data_utils_test_hacking import (
+    load_test_hacking_dataset,
+    prepare_test_hacking_dataset_for_reinforce,
+)
 from reward_model import get_reward_fn
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -72,14 +125,26 @@ class BatchThinkingTokenBudgetProcessor(LogitsProcessor):
                 # Extend arrays if batch size is larger than expected
                 self.tokens_generated.extend([0] * (batch_size - len(self.tokens_generated)))
                 self.stopped_thinking.extend([False] * (batch_size - len(self.stopped_thinking)))
+
+            # NEW: Detect if a </think> tag was already generated naturally.
+            if not self.stopped_thinking[batch_idx]:
+                seq = input_ids[batch_idx]
+                end_len = len(self.think_end_tokens)
+                if end_len > 0 and seq.size(-1) >= end_len:
+                    if seq[-end_len:].tolist() == self.think_end_tokens:
+                        self.stopped_thinking[batch_idx] = True
             
             self.tokens_generated[batch_idx] += 1
                     
             if self.max_thinking_tokens == 0 and not self.stopped_thinking[batch_idx] and self.tokens_generated[batch_idx] > 0:
                 self._set_all_scores_to_neg_inf(scores, batch_idx)
-                self._set_token_score(scores, self.nl_tokens, 0.0, batch_idx)
+                # self._set_token_score(scores, self.nl_tokens, 0.0, batch_idx)
                 self._set_token_score(scores, self.think_end_tokens, 0.0, batch_idx)
-                self.stopped_thinking[batch_idx] = True
+                # Do NOT set stopped_thinking here; we will mark it true only
+                # after the model actually generates the </think> tag on the
+                # subsequent step. This avoids the immediately-following
+                # block that zeroes its probability and lets the forced tag
+                # be sampled correctly.
             elif self.max_thinking_tokens is not None and not self.stopped_thinking[batch_idx]:
                 if (self.max_thinking_tokens > 0 and self.tokens_generated[batch_idx] / self.max_thinking_tokens) > 0.8:
                     boost_factor = 1.0 + (self.tokens_generated[batch_idx] / self.max_thinking_tokens)
@@ -96,9 +161,17 @@ class BatchThinkingTokenBudgetProcessor(LogitsProcessor):
                 elif self.max_thinking_tokens > 0 and self.tokens_generated[batch_idx] >= self.max_thinking_tokens - 1:
                     self._set_all_scores_to_neg_inf(scores, batch_idx)
                     self._set_token_score(scores, self.think_end_tokens, 0.0, batch_idx)
-                    self.stopped_thinking[batch_idx] = True
+                    # Wait until the </think> tag has actually been emitted
+                    # before marking the sequence as stopped. Otherwise the
+                    # "stopped" block below will erase the boost we just gave
+                    # to the end-tag logits and the model could exceed the
+                    # budget.
 
             if not self.stopped_thinking[batch_idx] and self.tokens_generated[batch_idx] < self.min_thinking_tokens:
+                for tid in self.think_end_tokens:
+                    scores[batch_idx][tid] = self.neg_inf
+
+            if self.stopped_thinking[batch_idx]:
                 for tid in self.think_end_tokens:
                     scores[batch_idx][tid] = self.neg_inf
 
@@ -259,8 +332,26 @@ def prepare_dataset(tokenizer):
     """Prepare the dataset for REINFORCE training."""
     logger.info("Preparing dataset...")
     
+    dataset_name = DATASET_CONFIG.get("dataset_name")
+    
+    # Support Test Hacking coding dataset
+    if dataset_name == "test_hacking":
+        ds = load_test_hacking_dataset(
+            DATASET_CONFIG["dataset_path"],
+            max_samples=DATASET_CONFIG.get("max_samples"),
+        )
+        dataset = prepare_test_hacking_dataset_for_reinforce(
+            ds,
+            tokenizer,
+            max_length=DATASET_CONFIG["max_length"],
+            truncation=DATASET_CONFIG["truncation"],
+            enable_thinking=INFERENCE_CONFIG["enable_thinking"],
+        )
+        logger.info(f"Test hacking dataset prepared: {len(dataset)} samples")
+        return dataset
+    
     # Support MBPP coding dataset out of the box
-    if DATASET_CONFIG.get("dataset_name") == "mbpp":
+    if dataset_name == "mbpp":
         mbpp_split = DATASET_CONFIG.get("dataset_split", "sanitized")
         ds = load_mbpp_dataset(mbpp_split, max_samples=DATASET_CONFIG.get("max_samples"))
         dataset = prepare_mbpp_dataset_for_reinforce(
@@ -306,7 +397,7 @@ def generate_responses(model, tokenizer, input_ids, config):
         "eos_token_id": tokenizer.eos_token_id,
         "repetition_penalty": 1.1,
         "return_dict_in_generate": True,
-        "output_scores": True,
+        "output_scores": False,
     }
     
     # Conditionally use thinking processor based on enable_thinking and use_thinking_processor settings
@@ -622,20 +713,27 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
 
                 # Aggregate after-think rewards for optimisation
                 rewards = [r1 + r2 for r1, r2 in zip(rewards_primary_after, rewards_secondary_after)]
+                thinking_rewards = rewards_secondary_think
 
-                # Aggregate thinking-section rewards for logging
-                thinking_rewards = [r1 + r2 for r1, r2 in zip(rewards_primary_think, rewards_secondary_think)]
             else:
                 rewards = rewards_primary_after
-                thinking_rewards = rewards_primary_think
+                thinking_rewards = [0.0 for _ in rewards]
             
             try:
                 # Compute REINFORCE loss with KL penalty and advantage
                 loss, log_probs, rewards_tensor, kl_penalty, advantages = compute_reinforce_loss(
                     model, input_ids, response_ids, rewards, tokenizer, ref_model, config
                 )
-            except torch.cuda.OutOfMemoryError:
-                logger.warning(f"OOM during forward/backward at global_step={global_step}. Skipping batch.")
+            except torch.cuda.OutOfMemoryError as e:
+                # More precise logging – we know the error happened inside compute_reinforce_loss (forward pass)
+                logger.exception(
+                    "OOM during forward pass (compute_reinforce_loss) at global_step=%d | batch_size=%d | input_len=%d | response_len=%d. Details: %s",
+                    global_step,
+                    input_ids.size(0),
+                    input_ids.size(-1),
+                    response_ids.size(-1) if 'response_ids' in locals() else -1,
+                    str(e),
+                )
                 _clear_memory()
                 optimizer.zero_grad(set_to_none=True)
                 continue
@@ -651,7 +749,21 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
             loss_scaled = loss / config.gradient_accumulation_steps
 
             # Backward pass (accumulates gradients)
-            loss_scaled.backward()
+            try:
+                loss_scaled.backward()
+            except torch.cuda.OutOfMemoryError as e:
+                # Precise OOM location – during backward pass
+                logger.exception(
+                    "OOM during backward pass at global_step=%d | batch_size=%d | input_len=%d | response_len=%d. Details: %s",
+                    global_step,
+                    input_ids.size(0),
+                    input_ids.size(-1),
+                    response_ids.size(-1),
+                    str(e),
+                )
+                _clear_memory()
+                optimizer.zero_grad(set_to_none=True)
+                continue
 
             accumulate_step = (step + 1) % config.gradient_accumulation_steps == 0
             last_batch = (step + 1) == len(dataloader)
@@ -794,11 +906,12 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
 def main():
     """Main training function."""
     logger.info("Starting REINFORCE training setup...")
-    config = get_config_for_gpu("a100")
+    # Unified config is used directly; no GPU-specific overrides
+    config = TRAIN_CONFIG
     
     if config.log_with == "wandb":
         wandb.init(
-            project="cot obfuscation 0",
+            project="hack obfusc",
             name=config.exp_name,
             config=vars(config)
         )
