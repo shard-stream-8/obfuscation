@@ -1,20 +1,42 @@
-"""
-Configuration for REINFORCE training.
-"""
+# -----------------------------------------------------------------------------
+# Unified configuration for REINFORCE training.
+# All options are collected in a single dataclass instance `CONFIG`.
+# No GPU-specific overrides or separate config objects remain.
+# -----------------------------------------------------------------------------
 
-from dataclasses import dataclass
-from typing import Optional
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Optional, List
+import os
+import re
+
 
 @dataclass
-class REINFORCEConfig:
-    """Configuration for REINFORCE training (pruned)."""
+class Config:
+    # ------------------------------------------------------------------
     # Optimisation
+<<<<<<< HEAD
     learning_rate: float = 1e-4
     gradient_accumulation_steps: int = 1  # number of rollout batches to accumulate
     max_grad_norm: float = 0.5
+=======
+    # ------------------------------------------------------------------
+    learning_rate: float = 1e-4
+    gradient_accumulation_steps: int = 2  # number of rollout batches to accumulate
+    max_grad_norm: float = 0.3
+    num_train_epochs: int = 10
+    per_device_train_batch_size: int = 8
+>>>>>>> 278d4d6803fc38710733a5870a4d73ce25e534db
 
+    # ------------------------------------------------------------------
     # Runtime / bookkeeping
+<<<<<<< HEAD
     exp_name: str = "mdpp_adverb"
+=======
+    # ------------------------------------------------------------------
+    exp_name: str = "hacker"
+>>>>>>> 278d4d6803fc38710733a5870a4d73ce25e534db
     log_with: str = "wandb"
     steps: int = 100  # max training steps (rollout batches)
     logging_steps: int = 1
@@ -22,145 +44,130 @@ class REINFORCEConfig:
     warmup_steps: int = 20
     rollout_save_steps: int = 5
 
+    # ------------------------------------------------------------------
     # LR scheduler & weight decay
-    weight_decay: float = 0.001
+    # ------------------------------------------------------------------
+    weight_decay: float = 0.01
     lr_scheduler_type: str = "linear"
 
-    # Epoch / batch sizes
-    num_train_epochs: int = 4
-    per_device_train_batch_size: int = 64
-
+    # ------------------------------------------------------------------
     # Precision / resume
+<<<<<<< HEAD
+=======
+    # ------------------------------------------------------------------
+>>>>>>> 278d4d6803fc38710733a5870a4d73ce25e534db
     fp16: bool = False
     bf16: bool = True
     resume_from_checkpoint: bool = False
     checkpoint_dir: str = "./reinforce_output"
 
+    # ------------------------------------------------------------------
     # Reward functions
-    reward_fn_name: str = "mbpp"
+    # ------------------------------------------------------------------
+    reward_fn_name: str = "test_hacking"
     reward_fn_name_2: Optional[str] = "keyword"  # optional second reward
 
+    # ------------------------------------------------------------------
     # KL / advantage
+<<<<<<< HEAD
     use_kl_penalty: bool = False
     kl_beta: float = 0.2
+=======
+    # ------------------------------------------------------------------
+    use_kl_penalty: bool = True
+    kl_beta: float = 0.1
+>>>>>>> 278d4d6803fc38710733a5870a4d73ce25e534db
     use_advantage: bool = True
 
+    # ------------------------------------------------------------------
     # Other
+    # ------------------------------------------------------------------
     zero_thinking_gradients: bool = True
     # Hugging Face Hub repo to push LoRA adapters after training (optional)
     hf_repo_out: Optional[str] = "jacobcd52/qwen3_4b_mdpp_adverb"
 
-    # ---- LoRA adapter ----
+    # ------------------------------------------------------------------
+    # Model configuration
+    # ------------------------------------------------------------------
+    model_name: str = "Qwen/Qwen3-4B"
+    device_map: str = "auto"
+    torch_dtype: str = "auto"
+    trust_remote_code: bool = True
+
+    # ------------------------------------------------------------------
+    # LoRA configuration
+    # ------------------------------------------------------------------
+    lora_r: int = 8
+    lora_alpha: int = 16
+    lora_target_modules: List[str] = field(
+        default_factory=lambda: [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ]
+    )
+    lora_dropout: float = 0.05
+    lora_bias: str = "all"
+    lora_task_type: str = "CAUSAL_LM"
+
     # If provided, the trainer will load existing LoRA weights from this
     # Hugging Face Hub repo (or local path) instead of randomly initialising
     # new adapters.
     lora_adapter_repo: Optional[str] = None
 
-# Model Configuration
-MODEL_CONFIG = {
-    "model_name": "Qwen/Qwen3-4B",
-    "device_map": "auto",
-    "torch_dtype": "bfloat16",
-    "trust_remote_code": True
-}
+    # ------------------------------------------------------------------
+    # Dataset configuration
+    # ------------------------------------------------------------------
+    dataset_path: str = "/root/obfuscation/datasets/test_hacking/coding_problems.jsonl"
+    max_samples: Optional[int] = None
+    max_length: int = 1024
+    truncation: bool = True
+    padding: bool = False
+    dataset_name: str = "test_hacking"
+    dataset_split: Optional[str] = None
 
-# LoRA Configuration
-LORA_CONFIG = {
-    "r": 32,
-    "lora_alpha": 64,
-    "target_modules": [
-        "q_proj", "k_proj", "v_proj", "o_proj",
-        "gate_proj", "up_proj", "down_proj"
-    ],
-    "lora_dropout": 0.,
-    "bias": "all",
-    "task_type": "CAUSAL_LM"
-}
+    # ------------------------------------------------------------------
+    # Inference configuration
+    # ------------------------------------------------------------------
+    max_new_tokens: int = 500
+    min_new_tokens: int = 150
+    temperature: float = 0.7
+    top_p: float = 1.0
+    top_k: int = 0
+    do_sample: bool = True
+    enable_thinking: bool = True
+    max_thinking_tokens: int = 200
+    min_thinking_tokens: int = 100
+    use_thinking_processor: bool = True
 
-# REINFORCE Configuration
-REINFORCE_CONFIG = REINFORCEConfig()
 
-# Dataset Configuration
-DATASET_CONFIG = {
-    "dataset_path": "/root/obfuscation/datasets/math_5000_number_words.jsonl",
-    "max_samples": None,
-    "max_length": 2048,
-    "truncation": True,
-    "padding": False,
-    "dataset_name": "mbpp",
-    "dataset_split": "full"
-}
+# Instantiate the unified configuration
+CONFIG = Config()
 
-# Inference Configuration
-INFERENCE_CONFIG = {
-    "max_new_tokens": 500,
-    "min_new_tokens": 100,
-    "temperature": 0.7,
-    "top_p": 1.0,
-    "top_k": 0,
-    "do_sample": True,
-    "enable_thinking": True,
-    "max_thinking_tokens": 100,
-    "min_thinking_tokens": 50,
-    "use_thinking_processor": True
-}
 
-# GPU-specific configurations
-A100_CONFIG = {
-    "per_device_train_batch_size": 8,
-    "gradient_accumulation_steps": 2,
-    "fp16": False,
-    "bf16": True
-}
+# -----------------------------------------------------------------------------
+# Helper utilities that depend on the unified config
+# -----------------------------------------------------------------------------
 
-def get_config_for_gpu(gpu_type: str = "auto"):
-    """Get REINFORCE configuration optimized for specific GPU type."""
-    config = REINFORCE_CONFIG
-    
-    if gpu_type.lower() == "a100":
-        print("Using A100 config")
-        config.per_device_train_batch_size = A100_CONFIG["per_device_train_batch_size"]
-        config.gradient_accumulation_steps = A100_CONFIG["gradient_accumulation_steps"]
-        config.fp16 = A100_CONFIG["fp16"]
-        config.bf16 = A100_CONFIG["bf16"]
-    elif gpu_type.lower() == "auto":
-        import torch
-        if torch.cuda.is_available():
-            memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
-            if memory_gb >= 70:
-                config.per_device_train_batch_size = A100_CONFIG["per_device_train_batch_size"]
-                config.gradient_accumulation_steps = A100_CONFIG["gradient_accumulation_steps"]
-                config.fp16 = A100_CONFIG["fp16"]
-                config.bf16 = A100_CONFIG["bf16"]
-            elif memory_gb >= 20:
-                config.per_device_train_batch_size = 4
-                config.gradient_accumulation_steps = 4
-                config.fp16 = False
-                config.bf16 = True
-            else:
-                config.per_device_train_batch_size = 2
-                config.gradient_accumulation_steps = 8
-                config.fp16 = False
-                config.bf16 = True
-    
-    return config
+def get_reward_mode(cfg: Config | None = None) -> str:
+    """Return reward calculation mode based on `enable_thinking`."""
+    cfg = cfg or CONFIG
+    return "thinking_only" if cfg.enable_thinking else "all_tokens"
 
-def get_reward_mode():
-    """Get reward calculation mode based on enable_thinking setting."""
-    return "thinking_only" if INFERENCE_CONFIG["enable_thinking"] else "all_tokens"
 
 def get_latest_checkpoint(checkpoint_dir: str) -> Optional[str]:
     """Find the latest checkpoint in the given directory."""
-    import os
-    import re
-    
     if not os.path.exists(checkpoint_dir):
         return None
-    
+
     # Look for checkpoint directories with pattern "checkpoint-{number}"
-    checkpoint_pattern = re.compile(r'checkpoint-(\d+)')
+    checkpoint_pattern = re.compile(r"checkpoint-(\d+)")
     checkpoints = []
-    
+
     for item in os.listdir(checkpoint_dir):
         item_path = os.path.join(checkpoint_dir, item)
         if os.path.isdir(item_path):
@@ -168,10 +175,10 @@ def get_latest_checkpoint(checkpoint_dir: str) -> Optional[str]:
             if match:
                 step_num = int(match.group(1))
                 checkpoints.append((step_num, item_path))
-    
+
     if not checkpoints:
         return None
-    
+
     # Return the checkpoint with the highest step number
     latest_checkpoint = max(checkpoints, key=lambda x: x[0])
     return latest_checkpoint[1] 
