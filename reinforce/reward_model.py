@@ -161,8 +161,8 @@ def mbpp_reward_fn(
 def keyword_reward_fn(
     completions, 
     keywords: List[str] = ["ly ", "ly.", "ly,"], 
-    scale=-0.5, 
-    clip=2.0,
+    scale=-0.2, 
+    clip=1.0,
     *_, **__):
     """Reward = count of instances of keywords."""
     import re as _re

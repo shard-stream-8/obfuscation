@@ -72,14 +72,26 @@ class BatchThinkingTokenBudgetProcessor(LogitsProcessor):
                 # Extend arrays if batch size is larger than expected
                 self.tokens_generated.extend([0] * (batch_size - len(self.tokens_generated)))
                 self.stopped_thinking.extend([False] * (batch_size - len(self.stopped_thinking)))
+
+            # NEW: Detect if a </think> tag was already generated naturally.
+            if not self.stopped_thinking[batch_idx]:
+                seq = input_ids[batch_idx]
+                end_len = len(self.think_end_tokens)
+                if end_len > 0 and seq.size(-1) >= end_len:
+                    if seq[-end_len:].tolist() == self.think_end_tokens:
+                        self.stopped_thinking[batch_idx] = True
             
             self.tokens_generated[batch_idx] += 1
                     
             if self.max_thinking_tokens == 0 and not self.stopped_thinking[batch_idx] and self.tokens_generated[batch_idx] > 0:
                 self._set_all_scores_to_neg_inf(scores, batch_idx)
-                self._set_token_score(scores, self.nl_tokens, 0.0, batch_idx)
+                # self._set_token_score(scores, self.nl_tokens, 0.0, batch_idx)
                 self._set_token_score(scores, self.think_end_tokens, 0.0, batch_idx)
-                self.stopped_thinking[batch_idx] = True
+                # Do NOT set stopped_thinking here; we will mark it true only
+                # after the model actually generates the </think> tag on the
+                # subsequent step. This avoids the immediately-following
+                # block that zeroes its probability and lets the forced tag
+                # be sampled correctly.
             elif self.max_thinking_tokens is not None and not self.stopped_thinking[batch_idx]:
                 if (self.max_thinking_tokens > 0 and self.tokens_generated[batch_idx] / self.max_thinking_tokens) > 0.8:
                     boost_factor = 1.0 + (self.tokens_generated[batch_idx] / self.max_thinking_tokens)
@@ -96,9 +108,17 @@ class BatchThinkingTokenBudgetProcessor(LogitsProcessor):
                 elif self.max_thinking_tokens > 0 and self.tokens_generated[batch_idx] >= self.max_thinking_tokens - 1:
                     self._set_all_scores_to_neg_inf(scores, batch_idx)
                     self._set_token_score(scores, self.think_end_tokens, 0.0, batch_idx)
-                    self.stopped_thinking[batch_idx] = True
+                    # Wait until the </think> tag has actually been emitted
+                    # before marking the sequence as stopped. Otherwise the
+                    # "stopped" block below will erase the boost we just gave
+                    # to the end-tag logits and the model could exceed the
+                    # budget.
 
             if not self.stopped_thinking[batch_idx] and self.tokens_generated[batch_idx] < self.min_thinking_tokens:
+                for tid in self.think_end_tokens:
+                    scores[batch_idx][tid] = self.neg_inf
+
+            if self.stopped_thinking[batch_idx]:
                 for tid in self.think_end_tokens:
                     scores[batch_idx][tid] = self.neg_inf
 
@@ -624,10 +644,10 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
                 rewards = [r1 + r2 for r1, r2 in zip(rewards_primary_after, rewards_secondary_after)]
 
                 # Aggregate thinking-section rewards for logging
-                thinking_rewards = [r1 + r2 for r1, r2 in zip(rewards_primary_think, rewards_secondary_think)]
+                thinking_rewards = rewards_secondary_think
             else:
                 rewards = rewards_primary_after
-                thinking_rewards = rewards_primary_think
+                thinking_rewards = [0 for _ in range(len(rewards_primary_after))]
             
             try:
                 # Compute REINFORCE loss with KL penalty and advantage
@@ -790,6 +810,14 @@ def train_reinforce(model, tokenizer, train_dataset, config, ref_model=None):
             break
     
     logger.info("REINFORCE training completed")
+
+    # Push LoRA adapters to Hugging Face Hub if requested
+    if getattr(config, "hf_repo_out", None):
+        try:
+            model.push_to_hub(config.hf_repo_out)
+            logger.info(f"LoRA adapters pushed to Hugging Face Hub repo: {config.hf_repo_out}")
+        except Exception as e:
+            logger.error(f"Failed to push LoRA adapters to Hub: {e}")
 
 def main():
     """Main training function."""

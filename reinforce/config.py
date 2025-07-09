@@ -9,17 +9,17 @@ from typing import Optional
 class REINFORCEConfig:
     """Configuration for REINFORCE training (pruned)."""
     # Optimisation
-    learning_rate: float = 3e-4
+    learning_rate: float = 1e-4
     gradient_accumulation_steps: int = 1  # number of rollout batches to accumulate
-    max_grad_norm: float = 1.0
+    max_grad_norm: float = 0.5
 
     # Runtime / bookkeeping
-    exp_name: str = "spillover"
+    exp_name: str = "mdpp_adverb"
     log_with: str = "wandb"
-    steps: int = 1000  # max training steps (rollout batches)
+    steps: int = 100  # max training steps (rollout batches)
     logging_steps: int = 1
     save_steps: int = 20
-    warmup_steps: int = 0
+    warmup_steps: int = 20
     rollout_save_steps: int = 5
 
     # LR scheduler & weight decay
@@ -31,8 +31,8 @@ class REINFORCEConfig:
     per_device_train_batch_size: int = 64
 
     # Precision / resume
-    fp16: bool = True
-    bf16: bool = False
+    fp16: bool = False
+    bf16: bool = True
     resume_from_checkpoint: bool = False
     checkpoint_dir: str = "./reinforce_output"
 
@@ -42,17 +42,19 @@ class REINFORCEConfig:
 
     # KL / advantage
     use_kl_penalty: bool = False
-    kl_beta: float = 0.
+    kl_beta: float = 0.2
     use_advantage: bool = True
 
     # Other
     zero_thinking_gradients: bool = True
+    # Hugging Face Hub repo to push LoRA adapters after training (optional)
+    hf_repo_out: Optional[str] = "jacobcd52/qwen3_4b_mdpp_adverb"
 
     # ---- LoRA adapter ----
     # If provided, the trainer will load existing LoRA weights from this
     # Hugging Face Hub repo (or local path) instead of randomly initialising
     # new adapters.
-    lora_adapter_repo: Optional[str] = "jacobcd52/qwen3_4b_hacker"
+    lora_adapter_repo: Optional[str] = None
 
 # Model Configuration
 MODEL_CONFIG = {
